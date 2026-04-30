@@ -2,9 +2,9 @@ import streamlit as st
 from scraper import search_app, get_reviews
 from agent import analyze_app_reviews, generate_competitive_insights, stream_prd_draft
 
-st.set_page_config(page_title="App Store Intelligence Agent", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="App Store 竞品洞察 Agent", page_icon="🔍", layout="wide")
 
-st.title("🔍 App Store Intelligence Agent")
+st.title("🔍 App Store 竞品洞察 Agent")
 st.caption("输入 App 名称，自动抓取评论并分析用户痛点、竞品差距，一键生成需求草稿")
 
 # ── Input ──────────────────────────────────────────────────────────────────
