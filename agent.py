@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 from anthropic import Anthropic
+from scraper import search_app, get_reviews
 
 _env_path = Path(__file__).parent / ".env"
 if _env_path.exists():
@@ -12,64 +13,101 @@ if _env_path.exists():
 
 client = Anthropic()
 
-REVIEW_ANALYSIS_PROMPT = """你是一位资深产品分析师。请分析以下 App Store 评论，提炼用户真实反馈。
+# Tavily 可选，有 key 才启用
+try:
+    from tavily import TavilyClient
+    _tavily_key = os.getenv("TAVILY_API_KEY", "")
+    tavily = TavilyClient(api_key=_tavily_key) if _tavily_key else None
+except ImportError:
+    tavily = None
 
-App 名称：{app_name}
-评论数量：{count} 条
+# ── 工具定义 ────────────────────────────────────────────────────────────────
+TOOLS = [
+    {
+        "name": "get_app_reviews",
+        "description": (
+            "在 App Store 中搜索指定 App 并抓取真实用户评论。"
+            "用于获取某个 App 的用户反馈数据，作为分析的原始素材。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app_name": {
+                    "type": "string",
+                    "description": "App 名称，如「小红书」「抖音」"
+                },
+                "country": {
+                    "type": "string",
+                    "description": "App Store 国家/地区代码，默认 cn",
+                    "default": "cn"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "抓取评论数量，建议 100-200",
+                    "default": 150
+                }
+            },
+            "required": ["app_name"]
+        }
+    },
+    {
+        "name": "web_search",
+        "description": (
+            "搜索互联网获取 App 或公司的最新动态、功能更新、行业新闻。"
+            "用于补充 App Store 评论未能覆盖的最新产品信息。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词，如「小红书 2025 新功能」"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+]
 
-评论内容：
-{reviews}
+# ── 系统提示词 ──────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """你是一位资深产品经理，负责为主产品做竞品洞察分析。
 
-只输出 JSON，不要任何解释文字，不要 markdown 代码块，直接以 { 开头：
+你有两个工具：
+1. get_app_reviews：获取某 App 的真实用户评论（必须调用）
+2. web_search：搜索产品最新动态和新闻（可选，用于补充评论数据）
+
+工作步骤：
+1. 对主产品和每个竞品各调用一次 get_app_reviews 获取评论
+2. 如有必要，用 web_search 补充近期产品动态
+3. 收集完所有数据后，输出完整分析报告
+
+最终输出 JSON，直接以 { 开头，不要 markdown 代码块：
 {
-  "top_pain_points": [
-    {"issue": "问题描述", "frequency": "high/medium/low", "example_quote": "原文引用"}
-  ],
-  "top_positives": [
-    {"strength": "优点描述", "frequency": "high/medium/low", "example_quote": "原文引用"}
-  ],
-  "overall_sentiment": "positive/mixed/negative",
-  "key_feature_requests": ["功能需求1", "功能需求2"],
-  "summary": "2-3句总结"
+  "app_analyses": {
+    "App名称": {
+      "top_pain_points": [{"issue": "...", "frequency": "high/medium/low", "example_quote": "原文引用"}],
+      "top_positives": [{"strength": "...", "frequency": "high/medium/low", "example_quote": "原文引用"}],
+      "overall_sentiment": "positive/mixed/negative",
+      "key_feature_requests": ["需求1", "需求2"],
+      "summary": "2-3句总结"
+    }
+  },
+  "competitive_insights": {
+    "must_close_gaps": [{"gap": "...", "competitor": "...", "urgency": "high/medium"}],
+    "opportunity_windows": [{"opportunity": "...", "rationale": "..."}],
+    "core_advantages": [{"advantage": "...", "how_to_amplify": "..."}],
+    "priority_matrix": [{"action": "...", "impact": "high/medium/low", "effort": "high/medium/low"}],
+    "positioning_recommendation": "差异化定位建议（2-3句）",
+    "summary": "战略总结（3-4句）"
+  }
 }
 
 要求：
-- pain_points 和 positives 各提炼 3-5 条
-- example_quote 直接来自评论原文，不得包含英文双引号，用「」替代
-- frequency 基于提及频率判断"""
+- example_quote 使用「」不用英文引号
+- 分析以主产品视角为中心
+- pain_points 和 positives 各 3-5 条"""
 
-COMPETITIVE_INSIGHT_PROMPT = """你是 {main_app} 的产品经理，正在基于用户反馈数据做竞品分析。
-
-主产品：{main_app}
-竞品：{competitors}
-
-各产品用户反馈分析数据：
-{analyses}
-
-只输出 JSON，不要任何解释文字，不要 markdown 代码块，直接以 { 开头：
-{
-  "must_close_gaps": [
-    {"gap": "竞品已解决但主产品尚未解决的问题", "competitor": "哪个竞品做得更好", "urgency": "high/medium"}
-  ],
-  "opportunity_windows": [
-    {"opportunity": "双方都没解决的共同痛点", "rationale": "先解决的先发优势"}
-  ],
-  "core_advantages": [
-    {"advantage": "主产品领先竞品的地方", "how_to_amplify": "如何放大此优势"}
-  ],
-  "priority_matrix": [
-    {"action": "优先行动项", "impact": "high/medium/low", "effort": "high/medium/low"}
-  ],
-  "positioning_recommendation": "差异化定位建议（2-3句）",
-  "summary": "以主产品视角的战略总结（3-4句）"
-}
-
-要求：
-- must_close_gaps：3-5条，竞品明显更好的地方
-- opportunity_windows：2-4条，双方共同痛点
-- core_advantages：2-4条，主产品真实领先的地方
-- priority_matrix：3-5条，按影响力和投入排序"""
-
+# ── PRD 生成提示词 ──────────────────────────────────────────────────────────
 PRD_GENERATION_PROMPT = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
 
 选定的机会点：{opportunity}
@@ -111,6 +149,44 @@ As a [用户类型], I want to [具体行为], so that [获得价值]
 （2-3条边界说明）"""
 
 
+# ── 工具执行 ────────────────────────────────────────────────────────────────
+def run_tool(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "get_app_reviews":
+        app_name = tool_input["app_name"]
+        country = tool_input.get("country", "cn")
+        count = tool_input.get("count", 150)
+
+        results = search_app(app_name, country=country)
+        if not results:
+            return f"未找到 App：{app_name}"
+
+        info = results[0]
+        reviews = get_reviews(info["name"], info["id"], country=country, count=count)
+        if not reviews:
+            return f"「{info['name']}」暂无评论数据"
+
+        return json.dumps({
+            "app_name": info["name"],
+            "rating": info["rating"],
+            "rating_count": info["rating_count"],
+            "review_count": len(reviews),
+            "reviews": reviews
+        }, ensure_ascii=False)
+
+    elif tool_name == "web_search":
+        if not tavily:
+            return "web_search 不可用（未配置 TAVILY_API_KEY）"
+        query = tool_input["query"]
+        results = tavily.search(query=query, search_depth="basic", max_results=5)
+        formatted = []
+        for r in results.get("results", []):
+            formatted.append(f"**{r['title']}**\n{r['url']}\n{r['content'][:400]}")
+        return "\n---\n".join(formatted)
+
+    return "未知工具"
+
+
+# ── JSON 解析（带修复）──────────────────────────────────────────────────────
 def _parse_json(text: str) -> dict:
     raw = text.strip()
     if raw.startswith("```"):
@@ -125,53 +201,72 @@ def _parse_json(text: str) -> dict:
             return json.loads(raw[start:end + 1])
         except json.JSONDecodeError:
             pass
-    # Last resort: ask Claude to repair
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
-        messages=[{"role": "user", "content": (
-            "修复下面损坏的 JSON，只输出合法 JSON，直接以 { 开头：\n\n" + raw[:6000]
-        )}]
+        messages=[{"role": "user", "content": "修复下面损坏的 JSON，只输出合法 JSON：\n\n" + raw[:6000]}]
     )
-    repaired = resp.content[0].text.strip()
-    if repaired.startswith("```"):
-        repaired = repaired.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(repaired)
+    return json.loads(resp.content[0].text.strip())
 
 
-def _call(prompt: str) -> str:
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return resp.content[0].text
+# ── Agent 主循环 ────────────────────────────────────────────────────────────
+def run_agent(main_app: str, competitors: list[str], country: str = "cn",
+              count: int = 150, on_status=None) -> dict:
+    """
+    真正的 Agent：Claude 自主决定调用哪些工具、何时停止。
+    返回结构化分析结果 dict。
+    """
+    task = f"请分析主产品「{main_app}」"
+    if competitors:
+        task += f"，竞品为：{'、'.join(competitors)}"
+    task += f"。App Store 地区：{country}，每个 App 抓取约 {count} 条评论。请先获取各产品评论，再输出完整分析报告。"
+
+    messages = [{"role": "user", "content": task}]
+
+    while True:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8096,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=messages
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    # 实时状态回调
+                    if on_status:
+                        if block.name == "get_app_reviews":
+                            on_status("tool", f"📥 抓取「{block.input.get('app_name')}」的用户评论...")
+                        elif block.name == "web_search":
+                            on_status("tool", f"🔎 搜索：{block.input.get('query')}")
+
+                    result = run_tool(block.name, block.input)
+
+                    if on_status:
+                        on_status("done", f"✅ 完成：{block.name}")
+
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result
+                    })
+
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        elif response.stop_reason == "end_turn":
+            for block in response.content:
+                if hasattr(block, "text") and block.text.strip():
+                    return _parse_json(block.text)
+            break
+
+    return {}
 
 
-def analyze_app_reviews(app_name: str, reviews: list[str]) -> dict:
-    sample = reviews[:200]
-    reviews_text = "\n".join([f"- {r}" for r in sample])
-    prompt = (
-        REVIEW_ANALYSIS_PROMPT
-        .replace("{app_name}", app_name)
-        .replace("{count}", str(len(reviews)))
-        .replace("{reviews}", reviews_text)
-    )
-    return _parse_json(_call(prompt))
-
-
-def generate_competitive_insights(app_analyses: dict, main_app: str) -> dict:
-    competitors = [n for n in app_analyses if n != main_app]
-    analyses_text = json.dumps(app_analyses, ensure_ascii=False, indent=2)
-    prompt = (
-        COMPETITIVE_INSIGHT_PROMPT
-        .replace("{main_app}", main_app)
-        .replace("{competitors}", "、".join(competitors) if competitors else "无")
-        .replace("{analyses}", analyses_text)
-    )
-    return _parse_json(_call(prompt))
-
-
+# ── PRD 流式生成 ────────────────────────────────────────────────────────────
 def stream_prd_draft(opportunity: str, all_analyses: dict, insights: dict):
     analyses_text = json.dumps(all_analyses, ensure_ascii=False, indent=2)
     insights_text = json.dumps(insights, ensure_ascii=False, indent=2)

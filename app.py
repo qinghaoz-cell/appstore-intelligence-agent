@@ -1,11 +1,10 @@
 import streamlit as st
-from scraper import search_app, get_reviews
-from agent import analyze_app_reviews, generate_competitive_insights, stream_prd_draft
+from agent import run_agent, stream_prd_draft
 
 st.set_page_config(page_title="App Store 竞品洞察 Agent", page_icon="🔍", layout="wide")
 
 st.title("🔍 App Store 竞品洞察 Agent")
-st.caption("输入 App 名称，自动抓取评论并分析用户痛点、竞品差距，一键生成需求草稿")
+st.caption("输入 App 名称，Agent 自动抓取评论并分析用户痛点、竞品差距，一键生成需求草稿")
 
 # ── Input ──────────────────────────────────────────────────────────────────
 with st.form("input_form"):
@@ -15,57 +14,42 @@ with st.form("input_form"):
     with col2:
         country = st.selectbox("App Store 地区", ["cn", "us", "hk", "tw"], index=0)
     competitor_input = st.text_input("竞品名称（可选，英文逗号分隔）", placeholder="例如：抖音, 微博")
-    review_count = st.slider("每个 App 抓取评论数", min_value=50, max_value=300, value=150, step=50)
+    review_count = st.slider("每个 App 抓取评论数", min_value=50, max_value=200, value=150, step=50)
     submitted = st.form_submit_button("开始分析 →", type="primary", use_container_width=True)
 
-# ── Pipeline ───────────────────────────────────────────────────────────────
+# ── Agent 运行 ─────────────────────────────────────────────────────────────
 if submitted and main_app.strip():
-    apps_input = [main_app.strip()]
-    if competitor_input.strip():
-        apps_input += [c.strip() for c in competitor_input.split(",") if c.strip()]
+    competitors = [c.strip() for c in competitor_input.split(",") if c.strip()]
 
-    all_analyses = {}
-    app_meta = {}
+    with st.status("🤖 Agent 正在运行...", expanded=True) as status:
+        tool_log = []
 
-    with st.status("正在运行分析流程...", expanded=True) as status:
-        for app_query in apps_input:
-            st.write(f"🔎 搜索「{app_query}」...")
-            results = search_app(app_query, country=country)
-            if not results:
-                st.warning(f"未在 {country.upper()} 区找到「{app_query}」，已跳过")
-                continue
+        def on_status(event_type, msg):
+            tool_log.append(msg)
+            st.write(msg)
 
-            info = results[0]
-            app_meta[info["name"]] = info
-            st.write(f"📥 抓取「{info['name']}」评论（最多 {review_count} 条）...")
-            reviews = get_reviews(info["name"], info["id"], country=country, count=review_count)
-            if not reviews:
-                st.warning(f"「{info['name']}」暂无评论数据，已跳过")
-                continue
+        result = run_agent(
+            main_app=main_app.strip(),
+            competitors=competitors,
+            country=country,
+            count=review_count,
+            on_status=on_status
+        )
 
-            st.write(f"🤖 分析「{info['name']}」的 {len(reviews)} 条评论...")
-            analysis = analyze_app_reviews(info["name"], reviews)
-            all_analyses[info["name"]] = analysis
-
-        if not all_analyses:
+        if not result:
             status.update(label="未获取到有效数据", state="error")
             st.stop()
 
-        main_app_name = list(all_analyses.keys())[0]
-        st.write("📊 生成竞品洞察与战略建议...")
-        insights = generate_competitive_insights(all_analyses, main_app=main_app_name)
         status.update(label="✅ 分析完成！", state="complete")
 
-    st.session_state["all_analyses"] = all_analyses
-    st.session_state["app_meta"] = app_meta
-    st.session_state["insights"] = insights
-    st.session_state["main_app_name"] = main_app_name
+    st.session_state["app_analyses"] = result.get("app_analyses", {})
+    st.session_state["insights"] = result.get("competitive_insights", {})
+    st.session_state["main_app_name"] = main_app.strip()
 
-if "all_analyses" not in st.session_state:
+if "app_analyses" not in st.session_state:
     st.stop()
 
-all_analyses = st.session_state["all_analyses"]
-app_meta = st.session_state["app_meta"]
+app_analyses = st.session_state["app_analyses"]
 insights = st.session_state["insights"]
 main_app_name = st.session_state["main_app_name"]
 
@@ -75,13 +59,9 @@ st.header("📋 Step 1 · 各 App 用户反馈分析")
 
 sentiment_emoji = {"positive": "😊", "mixed": "😐", "negative": "😞"}
 
-for app_name, analysis in all_analyses.items():
-    meta = app_meta.get(app_name, {})
+for app_name, analysis in app_analyses.items():
     emoji = sentiment_emoji.get(analysis.get("overall_sentiment", "mixed"), "😐")
-    with st.expander(
-        f"{emoji} **{app_name}**  —  {meta.get('rating', 'N/A')} ⭐  ({meta.get('rating_count', 0):,} 人评分)",
-        expanded=True,
-    ):
+    with st.expander(f"{emoji} **{app_name}**", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("🔴 主要痛点")
@@ -163,7 +143,7 @@ if st.button("生成需求草稿 →", type="primary"):
     placeholder = st.empty()
     full_text = ""
     pending = ""
-    for chunk in stream_prd_draft(selected, all_analyses, insights):
+    for chunk in stream_prd_draft(selected, app_analyses, insights):
         full_text += chunk
         pending += chunk
         if len(pending) >= 20:
