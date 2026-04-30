@@ -1,0 +1,5 @@
+anthropic
+app-store-scraper
+streamlit
+requests
+python-dotenv
