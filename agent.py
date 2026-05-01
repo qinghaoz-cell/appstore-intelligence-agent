@@ -206,10 +206,13 @@ def _parse_json(text: str) -> dict:
             pass
     resp = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": "修复下面损坏的 JSON，只输出合法 JSON：\n\n" + raw[:6000]}]
+        max_tokens=8192,
+        messages=[{"role": "user", "content": "修复下面损坏的 JSON，只输出合法 JSON，不要加 markdown 代码块：\n\n" + raw[:8000]}]
     )
-    return json.loads(resp.content[0].text.strip())
+    repaired = resp.content[0].text.strip()
+    if repaired.startswith("```"):
+        repaired = repaired.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return json.loads(repaired)
 
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────

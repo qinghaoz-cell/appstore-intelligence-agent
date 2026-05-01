@@ -14,7 +14,7 @@ with st.form("input_form"):
     with col2:
         country = st.selectbox("App Store 地区", ["cn", "us"], index=0)
     competitor_input = st.text_input("竞品名称（可选，英文逗号分隔）", placeholder="例如：抖音, 微博")
-    review_count = st.slider("每个 App 抓取评论数", min_value=50, max_value=100, value=100, step=50)
+    review_count = 100  # 固定抓取 100 条高赞评论
     submitted = st.form_submit_button("开始分析 →", type="primary", use_container_width=True)
 
 # ── Agent 运行 ─────────────────────────────────────────────────────────────
