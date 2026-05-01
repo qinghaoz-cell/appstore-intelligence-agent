@@ -165,8 +165,8 @@ def run_tool(tool_name: str, tool_input: dict) -> str:
         if not reviews:
             return f"「{info['name']}」暂无评论数据"
 
-        # 每条截断到 300 字，最多传 60 条给 Claude，避免 token 超限
-        trimmed = [r[:300] for r in reviews[:60]]
+        # 每条截断到 200 字，避免 messages 过大
+        trimmed = [r[:200] for r in reviews]
 
         return json.dumps({
             "app_name": info["name"],
