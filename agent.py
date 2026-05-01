@@ -165,12 +165,15 @@ def run_tool(tool_name: str, tool_input: dict) -> str:
         if not reviews:
             return f"「{info['name']}」暂无评论数据"
 
+        # 每条评论截断到 200 字，避免 messages 过大
+        trimmed = [r[:200] for r in reviews]
+
         return json.dumps({
             "app_name": info["name"],
             "rating": info["rating"],
             "rating_count": info["rating_count"],
-            "review_count": len(reviews),
-            "reviews": reviews
+            "review_count": len(trimmed),
+            "reviews": trimmed
         }, ensure_ascii=False)
 
     elif tool_name == "web_search":
