@@ -50,17 +50,36 @@ TOOLS = [
             "required": ["app_name"]
         }
     },
+    {
+        "name": "web_search",
+        "description": (
+            "搜索互联网获取 App 或公司的最新动态、功能更新、行业新闻。"
+            "用于补充 App Store 评论未能覆盖的最新产品信息。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词，如「小红书 2025 新功能」"
+                }
+            },
+            "required": ["query"]
+        }
+    }
 ]
 
 # ── 系统提示词 ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """你是一位资深产品经理，负责为主产品做竞品洞察分析。
 
-你有一个工具：
+你有两个工具：
 1. get_app_reviews：获取某 App 的真实用户评论（必须调用）
+2. web_search：搜索产品最新动态和新闻（按需使用，最多搜索1次）
 
 工作步骤：
 1. 对主产品和每个竞品各调用一次 get_app_reviews 获取评论
-2. 收集完所有数据后，输出完整分析报告
+2. 如有必要，用 web_search 补充近期产品动态（整体最多调用1次）
+3. 收集完所有数据后，输出完整分析报告
 
 最终输出 JSON，直接以 { 开头，不要 markdown 代码块：
 {
@@ -146,8 +165,8 @@ def run_tool(tool_name: str, tool_input: dict) -> str:
         if not reviews:
             return f"「{info['name']}」暂无评论数据"
 
-        # 每条截断到 200 字，避免 messages 过大
-        trimmed = [r[:200] for r in reviews]
+        # 每条截断到 200 字，最多 50 条，控制 token 用量
+        trimmed = [r[:200] for r in reviews[:50]]
 
         return json.dumps({
             "app_name": info["name"],
