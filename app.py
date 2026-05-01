@@ -12,7 +12,7 @@ with st.form("input_form"):
     with col1:
         main_app = st.text_input("主产品名称", placeholder="例如：小红书")
     with col2:
-        country = st.selectbox("App Store 地区", ["cn", "us", "hk", "tw"], index=0)
+        country = st.selectbox("App Store 地区", ["cn", "us"], index=0)
     competitor_input = st.text_input("竞品名称（可选，英文逗号分隔）", placeholder="例如：抖音, 微博")
     review_count = st.slider("每个 App 抓取评论数", min_value=50, max_value=200, value=150, step=50)
     submitted = st.form_submit_button("开始分析 →", type="primary", use_container_width=True)
