@@ -105,7 +105,7 @@ SYSTEM_PROMPT = """你是一位资深产品经理，负责为主产品做竞品�
 要求：
 - example_quote 使用「」不用英文引号
 - 分析以主产品视角为中心
-- pain_points 和 positives 各 3-5 条"""
+- pain_points 和 positives 各 3 条，must_close_gaps / opportunity_windows / core_advantages 各 3 条"""
 
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
 PRD_GENERATION_PROMPT = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
@@ -229,7 +229,7 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     while True:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=8096,
+            max_tokens=16000,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages
