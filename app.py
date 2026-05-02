@@ -27,13 +27,13 @@ def show_app_card(app_name, analysis):
             st.subheader("🔴 主要痛点")
             for item in analysis.get("top_pain_points", []):
                 freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
-                st.markdown(f"{freq_color} **{item['issue']}**")
+                st.markdown(f"{freq_color} **{item.get('issue', '')}**")
                 st.caption(f'「{item.get("example_quote", "")}」')
         with col2:
             st.subheader("🟢 用户好评")
             for item in analysis.get("top_positives", []):
                 freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
-                st.markdown(f"{freq_color} **{item['strength']}**")
+                st.markdown(f"{freq_color} **{item.get('strength', '')}**")
                 st.caption(f'「{item.get("example_quote", "")}」')
         if analysis.get("key_feature_requests"):
             st.subheader("💡 用户功能需求")
@@ -100,7 +100,7 @@ with col1:
     st.caption("竞品已解决，主产品尚未解决")
     for item in insights.get("must_close_gaps", []):
         badge = "🔴" if item.get("urgency") == "high" else "🟡"
-        st.markdown(f"{badge} **{item['gap']}**")
+        st.markdown(f"{badge} **{item.get('gap', '')}**")
         st.caption(f"参考：{item.get('competitor', '')}")
         st.write("")
 
@@ -108,7 +108,7 @@ with col2:
     st.subheader("🟡 先发制人的机会窗口")
     st.caption("双方都未解决，谁先做谁领先")
     for item in insights.get("opportunity_windows", []):
-        st.markdown(f"**{item['opportunity']}**")
+        st.markdown(f"**{item.get('opportunity', '')}**")
         st.caption(item.get("rationale", ""))
         st.write("")
 
@@ -116,7 +116,7 @@ with col3:
     st.subheader("🟢 已有优势，继续放大")
     st.caption("主产品领先竞品的地方")
     for item in insights.get("core_advantages", []):
-        st.markdown(f"**{item['advantage']}**")
+        st.markdown(f"**{item.get('advantage', '')}**")
         st.caption(item.get("how_to_amplify", ""))
         st.write("")
 
