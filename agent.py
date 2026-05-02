@@ -172,7 +172,7 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
         trimmed = [r[:200] for r in reviews[:50]]
 
         if on_status:
-            on_status("tool", f"🤖 分析「{app_name}」的 {len(trimmed)} 条评论...")
+            on_status("tool", f"🤖 分析「{app_name}」用户评论...")
 
         analysis = _analyze_app(app_name, trimmed)
         app_analyses[app_name] = analysis
