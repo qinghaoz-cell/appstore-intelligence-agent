@@ -190,28 +190,36 @@ def run_tool(tool_name: str, tool_input: dict) -> str:
 
 
 # ── JSON 解析（带修复）──────────────────────────────────────────────────────
+def _extract_json(text: str) -> str:
+    """剥离 markdown 代码块，提取 {...} 内容"""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end != -1:
+        return s[start:end + 1]
+    return s
+
+
 def _parse_json(text: str) -> dict:
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    # 第一层：直接解析
+    candidate = _extract_json(text)
     try:
-        return json.loads(raw)
+        return json.loads(candidate)
     except json.JSONDecodeError:
         pass
-    start, end = raw.find("{"), raw.rfind("}")
-    if start != -1 and end != -1:
-        try:
-            return json.loads(raw[start:end + 1])
-        except json.JSONDecodeError:
-            pass
+
+    # 第二层：让 Claude 修复，再提取 {...}
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=8192,
-        messages=[{"role": "user", "content": "修复下面损坏的 JSON，只输出合法 JSON，不要加 markdown 代码块：\n\n" + raw[:8000]}]
+        messages=[{"role": "user", "content": (
+            "下面是损坏的 JSON，请直接输出修复后的完整合法 JSON，"
+            "不要任何解释文字，不要 markdown 代码块，直接以 { 开头：\n\n"
+            + candidate[:8000]
+        )}]
     )
-    repaired = resp.content[0].text.strip()
-    if repaired.startswith("```"):
-        repaired = repaired.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    repaired = _extract_json(resp.content[0].text)
     return json.loads(repaired)
 
 
