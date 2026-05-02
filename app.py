@@ -1,10 +1,10 @@
 import streamlit as st
 from agent import run_agent, stream_prd_draft
 
-st.set_page_config(page_title="App Store 竞品洞察 Agent", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="用户评论竞品洞察 Agent", page_icon="🔍", layout="wide")
 
-st.title("🔍 App Store 竞品洞察 Agent")
-st.caption("输入 App 名称，Agent 自动抓取评论并分析用户痛点、竞品差距，一键生成需求草稿")
+st.title("🔍 用户评论竞品洞察 Agent")
+st.caption("输入 App 名称，Agent 自动抓取多平台用户评论并分析用户痛点、竞品差距，一键生成需求草稿")
 
 # ── Input ──────────────────────────────────────────────────────────────────
 with st.form("input_form"):
