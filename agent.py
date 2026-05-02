@@ -13,6 +13,28 @@ if _env_path.exists():
 
 client = Anthropic()
 
+# Tavily 可选
+try:
+    from tavily import TavilyClient
+    _tavily_key = os.getenv("TAVILY_API_KEY", "")
+    tavily = TavilyClient(api_key=_tavily_key) if _tavily_key else None
+except ImportError:
+    tavily = None
+
+INSIGHT_TOOLS = [
+    {
+        "name": "web_search",
+        "description": "搜索产品最新动态、功能更新、行业新闻，补充评论数据未覆盖的近期信息。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词"}
+            },
+            "required": ["query"]
+        }
+    }
+]
+
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
 PRD_GENERATION_PROMPT = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
 
@@ -109,20 +131,14 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
     return _parse_json(resp.content[0].text)
 
 
-# ── 竞品洞察生成 ─────────────────────────────────────────────────────────────
-def _generate_insights(app_analyses: dict, main_app: str) -> dict:
+# ── 竞品洞察生成（带 web_search 的 Agent 循环）────────────────────────────
+def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dict:
     competitors = [n for n in app_analyses if n != main_app]
     analyses_text = json.dumps(app_analyses, ensure_ascii=False, indent=2)
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": f"""你是「{main_app}」的产品经理，基于以下各产品用户分析，生成竞品洞察。
-竞品：{'、'.join(competitors) if competitors else '无'}
 
-各产品分析数据：
-{analyses_text}
-
-直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
+    system = f"""你是「{main_app}」的产品经理，基于用户评论分析数据生成竞品洞察报告。
+你可以使用 web_search 工具搜索产品最新动态（按需，最多 2 次）。
+收集完信息后，直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
 {{
   "must_close_gaps": [{{"gap": "...", "competitor": "...", "urgency": "high/medium"}}],
   "opportunity_windows": [{{"opportunity": "...", "rationale": "..."}}],
@@ -131,10 +147,50 @@ def _generate_insights(app_analyses: dict, main_app: str) -> dict:
   "positioning_recommendation": "差异化定位建议（2-3句）",
   "summary": "战略总结（3-4句）"
 }}
+各类各 3 条，以「{main_app}」视角为中心。"""
 
-各类各 3 条，以「{main_app}」视角为中心，example_quote 用「」。"""}]
-    )
-    return _parse_json(resp.content[0].text)
+    task = f"竞品：{'、'.join(competitors) if competitors else '无'}\n\n各产品用户分析：\n{analyses_text}"
+    messages = [{"role": "user", "content": task}]
+    tools = INSIGHT_TOOLS if tavily else []
+
+    while True:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            system=system,
+            tools=tools,
+            messages=messages
+        )
+
+        if resp.stop_reason == "tool_use":
+            tool_results = []
+            for block in resp.content:
+                if block.type == "tool_use" and block.name == "web_search":
+                    if on_status:
+                        on_status("tool", f"🔎 搜索：{block.input.get('query')}")
+                    query = block.input.get("query", "")
+                    results = tavily.search(query=query, search_depth="basic", max_results=3)
+                    content = "\n---\n".join(
+                        f"{r['title']}\n{r['content'][:300]}"
+                        for r in results.get("results", [])
+                    )
+                    if on_status:
+                        on_status("done", f"✅ 搜索完成")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": content
+                    })
+            messages.append({"role": "assistant", "content": resp.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        elif resp.stop_reason == "end_turn":
+            for block in resp.content:
+                if hasattr(block, "text") and block.text.strip():
+                    return _parse_json(block.text)
+            break
+
+    return {}
 
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
@@ -190,7 +246,7 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     if on_status:
         on_status("tool", "📊 生成竞品洞察与战略建议...")
 
-    insights = _generate_insights(app_analyses, main_app)
+    insights = _generate_insights(app_analyses, main_app, on_status=on_status)
 
     if on_status:
         on_status("done", "✅ 竞品洞察完成")
