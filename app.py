@@ -14,26 +14,56 @@ with st.form("input_form"):
     with col2:
         country = st.selectbox("App Store 地区", ["cn", "us"], index=0)
     competitor_input = st.text_input("竞品名称（可选，英文逗号分隔）", placeholder="例如：抖音, 微博")
-    review_count = 100  # 固定抓取 100 条高赞评论
     submitted = st.form_submit_button("开始分析 →", type="primary", use_container_width=True)
 
 # ── Agent 运行 ─────────────────────────────────────────────────────────────
+sentiment_emoji = {"positive": "😊", "mixed": "😐", "negative": "😞"}
+
+def show_app_card(app_name, analysis):
+    emoji = sentiment_emoji.get(analysis.get("overall_sentiment", "mixed"), "😐")
+    with st.expander(f"{emoji} **{app_name}**", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🔴 主要痛点")
+            for item in analysis.get("top_pain_points", []):
+                freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
+                st.markdown(f"{freq_color} **{item['issue']}**")
+                st.caption(f'「{item.get("example_quote", "")}」')
+        with col2:
+            st.subheader("🟢 用户好评")
+            for item in analysis.get("top_positives", []):
+                freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
+                st.markdown(f"{freq_color} **{item['strength']}**")
+                st.caption(f'「{item.get("example_quote", "")}」')
+        if analysis.get("key_feature_requests"):
+            st.subheader("💡 用户功能需求")
+            for req in analysis["key_feature_requests"]:
+                st.markdown(f"- {req}")
+        st.info(f"**总结：** {analysis.get('summary', '')}")
+
 if submitted and main_app.strip():
     competitors = [c.strip() for c in competitor_input.split(",") if c.strip()]
 
     with st.status("🤖 Agent 正在运行...", expanded=True) as status:
-        tool_log = []
-
         def on_status(event_type, msg):
-            tool_log.append(msg)
             st.write(msg)
+
+        # Step 1 容器：每分析完一个 App 立刻显示
+        st.divider()
+        st.header("📋 Step 1 · 各 App 用户反馈分析")
+        step1_container = st.container()
+
+        def on_app_analysis(app_name, analysis):
+            with step1_container:
+                show_app_card(app_name, analysis)
 
         result = run_agent(
             main_app=main_app.strip(),
             competitors=competitors,
             country=country,
-            count=review_count,
-            on_status=on_status
+            count=100,
+            on_status=on_status,
+            on_app_analysis=on_app_analysis,
         )
 
         if not result:
@@ -53,35 +83,12 @@ app_analyses = st.session_state["app_analyses"]
 insights = st.session_state["insights"]
 main_app_name = st.session_state["main_app_name"]
 
-# ── Section 1: Per-app review breakdown ────────────────────────────────────
-st.divider()
-st.header("📋 Step 1 · 各 App 用户反馈分析")
-
-sentiment_emoji = {"positive": "😊", "mixed": "😐", "negative": "😞"}
-
-for app_name, analysis in app_analyses.items():
-    emoji = sentiment_emoji.get(analysis.get("overall_sentiment", "mixed"), "😐")
-    with st.expander(f"{emoji} **{app_name}**", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🔴 主要痛点")
-            for item in analysis.get("top_pain_points", []):
-                freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
-                st.markdown(f"{freq_color} **{item['issue']}**")
-                st.caption(f'「{item.get("example_quote", "")}」')
-        with col2:
-            st.subheader("🟢 用户好评")
-            for item in analysis.get("top_positives", []):
-                freq_color = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(item.get("frequency"), "⚪")
-                st.markdown(f"{freq_color} **{item['strength']}**")
-                st.caption(f'「{item.get("example_quote", "")}」')
-
-        if analysis.get("key_feature_requests"):
-            st.subheader("💡 用户功能需求")
-            for req in analysis["key_feature_requests"]:
-                st.markdown(f"- {req}")
-
-        st.info(f"**总结：** {analysis.get('summary', '')}")
+# ── Section 1: Per-app review breakdown（session state 刷新后重绘）──────────
+if "insights" in st.session_state:
+    st.divider()
+    st.header("📋 Step 1 · 各 App 用户反馈分析")
+    for app_name, analysis in app_analyses.items():
+        show_app_card(app_name, analysis)
 
 # ── Section 2: Competitive insights ────────────────────────────────────────
 st.divider()
