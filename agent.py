@@ -94,17 +94,20 @@ def _parse_json(text: str) -> dict:
         return json.loads(candidate)
     except json.JSONDecodeError:
         pass
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8192,
-        messages=[{"role": "user", "content": (
-            "下面是损坏的 JSON，请直接输出修复后的完整合法 JSON，"
-            "不要任何解释文字，不要 markdown 代码块，直接以 { 开头：\n\n"
-            + candidate[:8000]
-        )}]
-    )
-    repaired = _extract_json(resp.content[0].text)
-    return json.loads(repaired)
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": (
+                "下面是损坏的 JSON，请直接输出修复后的完整合法 JSON，"
+                "不要任何解释文字，不要 markdown 代码块，直接以 { 开头：\n\n"
+                + candidate[:8000]
+            )}]
+        )
+        repaired = _extract_json(resp.content[0].text)
+        return json.loads(repaired)
+    except Exception:
+        return {}
 
 
 # ── 单个 App 评论分析 ────────────────────────────────────────────────────────
@@ -128,7 +131,14 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
 评论数据：
 {reviews_text}"""}]
     )
-    return _parse_json(resp.content[0].text)
+    result = _parse_json(resp.content[0].text)
+    if not result:
+        result = {
+            "top_pain_points": [], "top_positives": [],
+            "overall_sentiment": "mixed", "key_feature_requests": [],
+            "summary": "分析数据获取失败，请重试"
+        }
+    return result
 
 
 # ── 竞品洞察生成（带 web_search 的 Agent 循环）────────────────────────────
