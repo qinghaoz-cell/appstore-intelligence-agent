@@ -111,8 +111,14 @@ def _parse_json(text: str) -> dict:
 
 
 # ── 单个 App 评论分析 ────────────────────────────────────────────────────────
+def _clean(text: str) -> str:
+    """清理特殊字符，避免破坏 JSON 输出"""
+    return text.replace('"', '"').replace('"', '"').replace("\\", " ").replace("\n", " ").strip()
+
+
 def _analyze_app(app_name: str, reviews: list[str]) -> dict:
-    reviews_text = "\n".join([f"- {r}" for r in reviews])
+    cleaned = [_clean(r) for r in reviews]
+    reviews_text = "\n".join([f"- {r}" for r in cleaned])
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
@@ -197,10 +203,19 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
         elif resp.stop_reason == "end_turn":
             for block in resp.content:
                 if hasattr(block, "text") and block.text.strip():
-                    return _parse_json(block.text)
+                    result = _parse_json(block.text)
+                    if result:
+                        return result
             break
 
-    return {}
+    return {
+        "must_close_gaps": [],
+        "opportunity_windows": [],
+        "core_advantages": [],
+        "priority_matrix": [],
+        "positioning_recommendation": "暂无数据，请重试",
+        "summary": "暂无数据，请重试"
+    }
 
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
