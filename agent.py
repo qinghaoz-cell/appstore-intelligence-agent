@@ -185,11 +185,14 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
                     if on_status:
                         on_status("tool", f"🔎 搜索：{block.input.get('query')}")
                     query = block.input.get("query", "")
-                    results = tavily.search(query=query, search_depth="basic", max_results=3)
-                    content = "\n---\n".join(
-                        f"{r['title']}\n{r['content'][:300]}"
-                        for r in results.get("results", [])
-                    )
+                    try:
+                        results = tavily.search(query=query, search_depth="basic", max_results=3)
+                        content = "\n---\n".join(
+                            f"{r['title']}\n{r['content'][:300]}"
+                            for r in results.get("results", [])
+                        )
+                    except Exception:
+                        content = "搜索暂时不可用，请基于评论数据进行分析"
                     if on_status:
                         on_status("done", f"✅ 搜索完成")
                     tool_results.append({
