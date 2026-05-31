@@ -119,31 +119,42 @@ def _clean(text: str) -> str:
 def _analyze_app(app_name: str, reviews: list[str]) -> dict:
     cleaned = [_clean(r) for r in reviews]
     reviews_text = "\n".join([f"- {r}" for r in cleaned])
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": f"""分析「{app_name}」App Store 评论，直接输出 JSON，以 {{ 开头：
+
+    prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
 
 {{
-  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "「原文」"}}],
-  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "「原文」"}}],
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
+  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
   "overall_sentiment": "positive/mixed/negative",
   "key_feature_requests": ["需求1", "需求2", "需求3"],
   "summary": "2-3句总结"
 }}
 
-要求：pain_points 和 positives 各 3 条，example_quote 用「」不用英文引号。
+要求：pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 用「」。
+如果数据极少，仍需输出合法 JSON，用已有信息尽力填充。
 
-评论数据：
-{reviews_text}"""}]
-    )
-    result = _parse_json(resp.content[0].text)
-    if not result:
-        result = {
-            "top_pain_points": [], "top_positives": [],
-            "overall_sentiment": "mixed", "key_feature_requests": [],
-            "summary": "分析数据获取失败，请重试"
-        }
+用户反馈数据：
+{reviews_text}"""
+
+    for attempt in range(2):
+        try:
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw = resp.content[0].text if resp.content else ""
+            result = _parse_json(raw)
+            if result:
+                break
+        except Exception:
+            result = {}
+
+    result.setdefault("top_pain_points", [])
+    result.setdefault("top_positives", [])
+    result.setdefault("overall_sentiment", "mixed")
+    result.setdefault("key_feature_requests", [])
+    result.setdefault("summary", "数据较少，分析结果仅供参考")
     return result
 
 
