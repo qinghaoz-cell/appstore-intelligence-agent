@@ -111,6 +111,8 @@ with col1:
         badge = "🔴" if item.get("urgency") == "high" else "🟡"
         st.markdown(f"{badge} **{item.get('gap', '')}**")
         st.caption(f"参考：{item.get('competitor', '')}")
+        if item.get("evidence"):
+            st.caption(f"证据：{item['evidence']}")
         st.write("")
 
 with col2:
@@ -119,6 +121,8 @@ with col2:
     for item in insights.get("opportunity_windows", []):
         st.markdown(f"**{item.get('opportunity', '')}**")
         st.caption(item.get("rationale", ""))
+        if item.get("evidence"):
+            st.caption(f"证据：{item['evidence']}")
         st.write("")
 
 with col3:
@@ -127,7 +131,29 @@ with col3:
     for item in insights.get("core_advantages", []):
         st.markdown(f"**{item.get('advantage', '')}**")
         st.caption(item.get("how_to_amplify", ""))
+        if item.get("evidence"):
+            st.caption(f"证据：{item['evidence']}")
         st.write("")
+
+assessment = insights.get("research_assessment", {})
+trace = insights.get("research_trace", [])
+if assessment or trace:
+    st.subheader("🔎 Agent 研究过程")
+    confidence_map = {"high": "高", "medium": "中", "low": "低"}
+    if assessment:
+        confidence = confidence_map.get(assessment.get("confidence"), assessment.get("confidence", ""))
+        st.caption(
+            f"结论置信度：{confidence or '未标注'}｜覆盖范围：{assessment.get('coverage', '')}"
+        )
+        if assessment.get("remaining_uncertainty"):
+            st.caption(f"待验证：{assessment['remaining_uncertainty']}")
+    if trace:
+        with st.expander(f"查看 Agent 的 {len(trace)} 次补充研究", expanded=False):
+            for index, item in enumerate(trace, start=1):
+                st.markdown(
+                    f"{index}. **{item.get('action', '')}** · {item.get('target', '')}"
+                )
+                st.caption(f"原因：{item.get('reason', '')}")
 
 st.subheader("📌 优先行动矩阵")
 priority = insights.get("priority_matrix", [])
