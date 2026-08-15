@@ -57,14 +57,23 @@ if submitted and main_app.strip():
             with step1_container:
                 show_app_card(app_name, analysis)
 
-        result = run_agent(
-            main_app=main_app.strip(),
-            competitors=competitors,
-            country=country,
-            count=100,
-            on_status=on_status,
-            on_app_analysis=on_app_analysis,
-        )
+        try:
+            result = run_agent(
+                main_app=main_app.strip(),
+                competitors=competitors,
+                country=country,
+                count=100,
+                on_status=on_status,
+                on_app_analysis=on_app_analysis,
+            )
+        except RuntimeError as exc:
+            status.update(label="分析失败", state="error")
+            st.error(str(exc))
+            st.stop()
+        except Exception:
+            status.update(label="分析失败", state="error")
+            st.error("服务暂时不可用，请稍后重试；如持续出现，请查看 Streamlit Cloud 日志。")
+            st.stop()
 
         if not result:
             status.update(label="未获取到有效数据", state="error")
