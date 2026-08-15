@@ -24,19 +24,32 @@ try:
 except ImportError:
     tavily = None
 
-INSIGHT_TOOLS = [
-    {
-        "name": "web_search",
-        "description": "搜索产品最新动态、功能更新、行业新闻，补充评论数据未覆盖的近期信息。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜索关键词"}
-            },
-            "required": ["query"]
-        }
+MAX_RESEARCH_ACTIONS = 5
+
+WEB_SEARCH_TOOL = {
+    "name": "web_search",
+    "description": "搜索产品最新动态、功能更新、行业新闻，补充评论数据未覆盖的近期信息。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜索关键词"}
+        },
+        "required": ["query"]
     }
-]
+}
+
+REVIEW_EVIDENCE_TOOL = {
+    "name": "inspect_review_evidence",
+    "description": "当摘要证据不足时，查看指定 App 的原始用户评论节选，用于核实某个痛点、优势或需求。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "app_name": {"type": "string", "description": "要查看的 App 名称"},
+            "focus": {"type": "string", "description": "希望核实的主题或假设"}
+        },
+        "required": ["app_name", "focus"]
+    }
+}
 
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
 PRD_GENERATION_PROMPT = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
@@ -176,34 +189,53 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
     return result
 
 
-# ── 竞品洞察生成（带 web_search 的 Agent 循环）────────────────────────────
-def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dict:
+# ── 竞品洞察生成（带研究工具的 Agent 循环）─────────────────────────────────
+def _review_evidence(review_evidence: dict, app_name: str, focus: str) -> str:
+    """返回有限的原始评论节选，防止一次工具调用塞入过多上下文。"""
+    reviews = review_evidence.get(app_name, [])
+    if not reviews:
+        return f"未找到「{app_name}」的原始评论；请基于已有分析或改查其他产品。"
+    excerpts = "\n".join(f"- {review}" for review in reviews[:12])
+    return f"「{app_name}」围绕「{focus}」的可用评论节选：\n{excerpts}"
+
+
+def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
+                       on_status=None) -> dict:
     competitors = [n for n in app_analyses if n != main_app]
     analyses_text = json.dumps(app_analyses, ensure_ascii=False, indent=2)
 
-    system = f"""你是「{main_app}」的产品经理，基于用户评论分析数据生成竞品洞察报告。
-你可以使用 web_search 工具搜索产品最新动态（按需，最多 2 次）。
-收集完信息后，直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
+    system = f"""你是「{main_app}」的竞品研究 Agent。你的目标不是罗列评论，而是形成有证据、可执行的产品决策。
+
+先判断已有证据是否足够：
+1. 摘要不足或某个结论需要核实时，调用 inspect_review_evidence 查看指定 App 的原始评论；
+2. 评论无法覆盖近期功能或市场变化时，才调用 web_search 搜索；
+3. 每条关键结论都要区分「评论证据」「公开信息」和「你的推断」。证据不足时，降低置信度或标为待验证，不要编造事实。
+4. 工具调用总数上限为 {MAX_RESEARCH_ACTIONS} 次；信息足够后立即输出结论。
+
+收集完成后，直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
 {{
-  "must_close_gaps": [{{"gap": "...", "competitor": "...", "urgency": "high/medium"}}],
-  "opportunity_windows": [{{"opportunity": "...", "rationale": "..."}}],
-  "core_advantages": [{{"advantage": "...", "how_to_amplify": "..."}}],
+  "must_close_gaps": [{{"gap": "...", "competitor": "...", "urgency": "high/medium", "evidence": "评论证据或公开信息"}}],
+  "opportunity_windows": [{{"opportunity": "...", "rationale": "...", "evidence": "评论证据或公开信息"}}],
+  "core_advantages": [{{"advantage": "...", "how_to_amplify": "...", "evidence": "评论证据或公开信息"}}],
   "priority_matrix": [{{"action": "...", "impact": "high/medium/low", "effort": "high/medium/low"}}],
   "positioning_recommendation": "差异化定位建议（2-3句）",
-  "summary": "战略总结（3-4句）"
+  "summary": "战略总结（3-4句）",
+  "research_assessment": {{"confidence": "high/medium/low", "coverage": "已覆盖的产品和问题", "remaining_uncertainty": "仍需验证的点，没有则写无"}}
 }}
 各类各 3 条，以「{main_app}」视角为中心。"""
 
     task = f"竞品：{'、'.join(competitors) if competitors else '无'}\n\n各产品用户分析：\n{analyses_text}"
     messages = [{"role": "user", "content": task}]
-    tools = INSIGHT_TOOLS if tavily else []
+    tools = [REVIEW_EVIDENCE_TOOL] + ([WEB_SEARCH_TOOL] if tavily else [])
+    research_trace = []
+    research_actions = 0
 
     while True:
         resp = client.messages.create(
             model=MODEL_NAME,
             max_tokens=4096,
             system=system,
-            tools=tools,
+            tools=tools if research_actions < MAX_RESEARCH_ACTIONS else [],
             messages=messages
         )
 
@@ -211,6 +243,7 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
             tool_results = []
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "web_search":
+                    research_actions += 1
                     if on_status:
                         on_status("tool", f"🔎 搜索：{block.input.get('query')}")
                     query = block.input.get("query", "")
@@ -224,10 +257,32 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
                         content = "搜索暂时不可用，请基于评论数据进行分析"
                     if on_status:
                         on_status("done", f"✅ 搜索完成")
+                    research_trace.append({
+                        "action": "搜索最新信息",
+                        "target": query,
+                        "reason": "补充评论未覆盖的近期信息",
+                    })
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": content
+                    })
+                elif block.type == "tool_use" and block.name == "inspect_review_evidence":
+                    research_actions += 1
+                    app_name = block.input.get("app_name", "")
+                    focus = block.input.get("focus", "")
+                    if on_status:
+                        on_status("tool", f"🧾 核查「{app_name}」评论证据：{focus}")
+                    content = _review_evidence(review_evidence, app_name, focus)
+                    research_trace.append({
+                        "action": "核查原始评论",
+                        "target": app_name,
+                        "reason": focus,
+                    })
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": content,
                     })
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": tool_results})
@@ -237,6 +292,12 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
                 if hasattr(block, "text") and block.text.strip():
                     result = _parse_json(block.text)
                     if result:
+                        result["research_trace"] = research_trace
+                        result.setdefault("research_assessment", {
+                            "confidence": "medium",
+                            "coverage": "基于已获取的评论分析",
+                            "remaining_uncertainty": "未提供研究自评",
+                        })
                         return result
             break
         else:
@@ -254,6 +315,7 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     """
     all_apps = [main_app] + competitors
     app_analyses = {}
+    review_evidence = {}
 
     for app_query in all_apps:
         if on_status:
@@ -284,6 +346,7 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
 
         analysis = _analyze_app(app_name, trimmed)
         app_analyses[app_name] = analysis
+        review_evidence[app_name] = trimmed
 
         if on_status:
             on_status("done", f"✅ 「{app_name}」分析完成")
@@ -298,7 +361,9 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     if on_status:
         on_status("tool", "📊 生成竞品洞察与战略建议...")
 
-    insights = _generate_insights(app_analyses, main_app, on_status=on_status)
+    insights = _generate_insights(
+        app_analyses, main_app, review_evidence, on_status=on_status
+    )
 
     if on_status:
         on_status("done", "✅ 竞品洞察完成")
