@@ -11,6 +11,9 @@ if _env_path.exists():
             k, v = line.split("=", 1)
             os.environ[k.strip()] = v.strip()
 
+# 可在 Streamlit Secrets 或 .env 中通过 ANTHROPIC_MODEL 覆盖。
+# 集中管理模型名，避免某个调用仍使用失效模型。
+MODEL_NAME = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 client = Anthropic()
 
 # Tavily 可选
@@ -88,6 +91,15 @@ def _extract_json(text: str) -> str:
     return s
 
 
+def _format_api_error(exc: Exception) -> str:
+    """提供可排查、且不泄露密钥的错误提示。"""
+    status_code = getattr(exc, "status_code", None)
+    detail = str(exc).strip()
+    if status_code:
+        return f"HTTP {status_code}{f'：{detail}' if detail else ''}"
+    return detail or exc.__class__.__name__
+
+
 def _parse_json(text: str) -> dict:
     candidate = _extract_json(text)
     try:
@@ -96,7 +108,7 @@ def _parse_json(text: str) -> dict:
         pass
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=MODEL_NAME,
             max_tokens=8192,
             messages=[{"role": "user", "content": (
                 "下面是损坏的 JSON，请直接输出修复后的完整合法 JSON，"
@@ -106,8 +118,8 @@ def _parse_json(text: str) -> dict:
         )
         repaired = _extract_json(resp.content[0].text)
         return json.loads(repaired)
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise RuntimeError("模型返回的分析结果无法解析为 JSON，请稍后重试。") from exc
 
 
 # ── 单个 App 评论分析 ────────────────────────────────────────────────────────
@@ -136,10 +148,12 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
 用户反馈数据：
 {reviews_text}"""
 
+    result = {}
+    last_error = None
     for attempt in range(2):
         try:
             resp = client.messages.create(
-                model="claude-sonnet-4-6",
+                model=MODEL_NAME,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -147,8 +161,12 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
             result = _parse_json(raw)
             if result:
                 break
-        except Exception:
-            result = {}
+        except Exception as exc:
+            last_error = exc
+
+    if not result:
+        detail = _format_api_error(last_error) if last_error else "未返回有效内容"
+        raise RuntimeError(f"评论分析调用失败：{detail}")
 
     result.setdefault("top_pain_points", [])
     result.setdefault("top_positives", [])
@@ -182,7 +200,7 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
 
     while True:
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=MODEL_NAME,
             max_tokens=4096,
             system=system,
             tools=tools,
@@ -221,15 +239,10 @@ def _generate_insights(app_analyses: dict, main_app: str, on_status=None) -> dic
                     if result:
                         return result
             break
+        else:
+            raise RuntimeError(f"竞品洞察未完成（停止原因：{resp.stop_reason}）。请稍后重试。")
 
-    return {
-        "must_close_gaps": [],
-        "opportunity_windows": [],
-        "core_advantages": [],
-        "priority_matrix": [],
-        "positioning_recommendation": "暂无数据，请重试",
-        "summary": "暂无数据，请重试"
-    }
+    raise RuntimeError("竞品洞察没有返回有效 JSON，请稍后重试。")
 
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
@@ -307,7 +320,7 @@ def stream_prd_draft(opportunity: str, all_analyses: dict, insights: dict):
         .replace("{insights}", insights_text)
     )
     with client.messages.stream(
-        model="claude-sonnet-4-6",
+        model=MODEL_NAME,
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}]
     ) as stream:
