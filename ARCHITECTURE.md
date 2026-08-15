@@ -29,7 +29,7 @@ scraper.get_reviews()       → iTunes RSS 抓评论，失败则 Tavily 搜索�
   ↓
 agent._analyze_app()        → 单次 Claude 调用，返回结构化分析 JSON
   ↓  （每完成一个 App 立即回调 on_app_analysis 展示卡片）
-agent._generate_insights()  → Agent 循环：Claude 自主决定是否调用 web_search
+agent._generate_insights()  → 研究 Agent 循环：判断证据缺口，自主核查原始评论或搜索产品动态
   ↓
 agent.stream_prd_draft()    → 用户选机会点后，流式生成 PRD Markdown
 ```
@@ -41,10 +41,11 @@ agent.stream_prd_draft()    → 用户选机会点后，流式生成 PRD Markdow
 | 函数 | 位置 | 作用 |
 |------|------|------|
 | `_extract_json(text)` | ~81行 | 从 Claude 输出里提取 JSON 字符串，去掉 markdown 代码块 |
-| `_parse_json(text)` | ~91行 | 解析 JSON，失败则调 Claude 修复，再失败返回 `{}` |
+| `_parse_json(text)` | ~105行 | 解析 JSON，失败则调 Claude 修复；失败时抛出可见错误 |
 | `_clean(text)` | ~114行 | 清理评论特殊字符，防止破坏 JSON |
 | `_analyze_app(app_name, reviews)` | ~119行 | 分析单个 App 评论，返回痛点/好评/需求/总结 |
-| `_generate_insights(app_analyses, main_app)` | ~151行 | **真正的 Agent 循环**，Claude 自主决定是否 web_search（最多2次） |
+| `_review_evidence(review_evidence, app_name, focus)` | ~195行 | 按 Agent 请求返回指定 App 的原始评论节选 |
+| `_generate_insights(app_analyses, main_app, review_evidence)` | ~205行 | **竞品研究 Agent 循环**：自主决定核查评论或搜索，最多 5 次研究动作 |
 | `run_agent(main_app, competitors, ...)` | ~225行 | 主入口，串联整个流程，支持 on_app_analysis 回调 |
 | `stream_prd_draft(opportunity, ...)` | ~289行 | 流式生成 PRD，用 yield 逐 chunk 返回 |
 
@@ -72,14 +73,23 @@ agent.stream_prd_draft()    → 用户选机会点后，流式生成 PRD Markdow
 
 ```json
 {
-  "must_close_gaps": [{"gap": "...", "competitor": "...", "urgency": "high/medium"}],
-  "opportunity_windows": [{"opportunity": "...", "rationale": "..."}],
-  "core_advantages": [{"advantage": "...", "how_to_amplify": "..."}],
+  "must_close_gaps": [{"gap": "...", "competitor": "...", "urgency": "high/medium", "evidence": "..."}],
+  "opportunity_windows": [{"opportunity": "...", "rationale": "...", "evidence": "..."}],
+  "core_advantages": [{"advantage": "...", "how_to_amplify": "...", "evidence": "..."}],
   "priority_matrix": [{"action": "...", "impact": "high/medium/low", "effort": "high/medium/low"}],
   "positioning_recommendation": "差异化定位建议",
-  "summary": "战略总结"
+  "summary": "战略总结",
+  "research_assessment": {"confidence": "high/medium/low", "coverage": "...", "remaining_uncertainty": "..."},
+  "research_trace": [{"action": "...", "target": "...", "reason": "..."}]
 }
 ```
+
+### 研究 Agent 的工具与边界
+
+- `inspect_review_evidence`：当评论摘要不足以支撑结论时，读取指定 App 的原始评论节选。
+- `web_search`：仅在评论无法覆盖近期功能或市场变化时，搜索公开信息；没有 Tavily API Key 时不会启用。
+- `MAX_RESEARCH_ACTIONS = 5`：限制一次研究的工具调用总数，控制耗时与成本。
+- 最终结论要求标注证据、置信度和待验证项；前端会展示 Agent 的补充研究轨迹。
 
 ---
 
