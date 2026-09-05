@@ -28,11 +28,11 @@ MAX_RESEARCH_ACTIONS = 5
 
 WEB_SEARCH_TOOL = {
     "name": "web_search",
-    "description": "搜索产品最新动态、功能更新、行业新闻，补充评论数据未覆盖的近期信息。",
+    "description": "Search public sources for recent product updates, feature changes, or market context that app reviews do not cover.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "搜索关键词"}
+            "query": {"type": "string", "description": "A focused search query"}
         },
         "required": ["query"]
     }
@@ -40,19 +40,19 @@ WEB_SEARCH_TOOL = {
 
 REVIEW_EVIDENCE_TOOL = {
     "name": "inspect_review_evidence",
-    "description": "当摘要证据不足时，查看指定 App 的原始用户评论节选，用于核实某个痛点、优势或需求。",
+    "description": "Inspect a limited excerpt of raw reviews for a selected app when the summary does not sufficiently support a conclusion.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "app_name": {"type": "string", "description": "要查看的 App 名称"},
-            "focus": {"type": "string", "description": "希望核实的主题或假设"}
+            "app_name": {"type": "string", "description": "The app to inspect"},
+            "focus": {"type": "string", "description": "The claim, theme, or hypothesis to verify"}
         },
         "required": ["app_name", "focus"]
     }
 }
 
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
-PRD_GENERATION_PROMPT = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
+PRD_GENERATION_PROMPT_ZH = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
 
 选定的机会点：{opportunity}
 
@@ -91,6 +91,45 @@ As a [用户类型], I want to [具体行为], so that [获得价值]
 
 ## 本期不做（Out of Scope）
 （2-3条边界说明）"""
+
+PRD_GENERATION_PROMPT_EN = """You are a senior product manager. Based on the user research and competitive analysis below, create a structured product-requirement draft for the selected opportunity.
+
+Selected opportunity: {opportunity}
+
+User-feedback analysis:
+{all_analyses}
+
+Competitive insights:
+{insights}
+
+Write the entire response in English and use this Markdown structure:
+
+## Feature Name
+
+## User Story
+As a [user type], I want to [action], so that [value].
+
+## Problem Statement
+Explain the severity and prevalence in 2–3 sentences.
+
+## Supporting User Evidence
+Include 2–3 real quotes or faithful excerpts and name the source app.
+
+## Competitive Context
+Summarize how competitors address this problem in 1–2 sentences.
+
+## Proposed Solution
+Describe what to build and how it works in 3–5 sentences.
+
+## Acceptance Criteria
+List 3–5 measurable criteria.
+
+## Key Metrics
+| Metric | Definition | Target |
+|--------|------------|--------|
+
+## Out of Scope
+List 2–3 explicit boundaries."""
 
 
 # ── JSON 解析（带修复）──────────────────────────────────────────────────────
@@ -141,11 +180,12 @@ def _clean(text: str) -> str:
     return text.replace('"', '"').replace('"', '"').replace("\\", " ").replace("\n", " ").strip()
 
 
-def _analyze_app(app_name: str, reviews: list[str]) -> dict:
+def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dict:
     cleaned = [_clean(r) for r in reviews]
     reviews_text = "\n".join([f"- {r}" for r in cleaned])
 
-    prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
+    if language == "zh":
+        prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
 
 {{
   "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
@@ -159,6 +199,21 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
 如果数据极少，仍需输出合法 JSON，用已有信息尽力填充。
 
 用户反馈数据：
+{reviews_text}"""
+    else:
+        prompt = f"""Analyze user feedback for \"{app_name}\". Return valid JSON only, beginning with {{:
+
+{{
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
+  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
+  "overall_sentiment": "positive/mixed/negative",
+  "key_feature_requests": ["request 1", "request 2", "request 3"],
+  "summary": "A 2–3 sentence summary"
+}}
+
+Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence.
+
+User feedback:
 {reviews_text}"""
 
     result = {}
@@ -185,26 +240,29 @@ def _analyze_app(app_name: str, reviews: list[str]) -> dict:
     result.setdefault("top_positives", [])
     result.setdefault("overall_sentiment", "mixed")
     result.setdefault("key_feature_requests", [])
-    result.setdefault("summary", "数据较少，分析结果仅供参考")
+    result.setdefault("summary", "数据较少，分析结果仅供参考" if language == "zh" else "Limited review data; interpret this analysis with caution.")
     return result
 
 
 # ── 竞品洞察生成（带研究工具的 Agent 循环）─────────────────────────────────
-def _review_evidence(review_evidence: dict, app_name: str, focus: str) -> str:
+def _review_evidence(review_evidence: dict, app_name: str, focus: str, language: str = "en") -> str:
     """返回有限的原始评论节选，防止一次工具调用塞入过多上下文。"""
     reviews = review_evidence.get(app_name, [])
     if not reviews:
-        return f"未找到「{app_name}」的原始评论；请基于已有分析或改查其他产品。"
+        return (f"No raw reviews were found for \"{app_name}\". Use the existing analysis or inspect another app."
+                if language == "en" else f"未找到「{app_name}」的原始评论；请基于已有分析或改查其他产品。")
     excerpts = "\n".join(f"- {review}" for review in reviews[:12])
-    return f"「{app_name}」围绕「{focus}」的可用评论节选：\n{excerpts}"
+    return (f"Available raw-review excerpts for \"{app_name}\" related to \"{focus}\":\n{excerpts}"
+            if language == "en" else f"「{app_name}」围绕「{focus}」的可用评论节选：\n{excerpts}")
 
 
 def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
-                       on_status=None) -> dict:
+                       on_status=None, language: str = "en") -> dict:
     competitors = [n for n in app_analyses if n != main_app]
     analyses_text = json.dumps(app_analyses, ensure_ascii=False, indent=2)
 
-    system = f"""你是「{main_app}」的竞品研究 Agent。你的目标不是罗列评论，而是形成有证据、可执行的产品决策。
+    if language == "zh":
+        system = f"""你是「{main_app}」的竞品研究 Agent。你的目标不是罗列评论，而是形成有证据、可执行的产品决策。
 
 先判断已有证据是否足够：
 1. 摘要不足或某个结论需要核实时，调用 inspect_review_evidence 查看指定 App 的原始评论；
@@ -223,8 +281,29 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
   "research_assessment": {{"confidence": "high/medium/low", "coverage": "已覆盖的产品和问题", "remaining_uncertainty": "仍需验证的点，没有则写无"}}
 }}
 各类各 3 条，以「{main_app}」视角为中心。"""
+        task = f"竞品：{'、'.join(competitors) if competitors else '无'}\n\n各产品用户分析：\n{analyses_text}"
+    else:
+        system = f"""You are the competitive-research Agent for \"{main_app}\". Your goal is not to list reviews, but to produce evidence-backed, actionable product decisions.
 
-    task = f"竞品：{'、'.join(competitors) if competitors else '无'}\n\n各产品用户分析：\n{analyses_text}"
+First assess whether the available evidence is sufficient:
+1. If a summary is insufficient or a conclusion needs verification, call inspect_review_evidence for the relevant app.
+2. Call web_search only when reviews cannot answer a question about a recent feature change, product update, or market context.
+3. Distinguish review evidence, public information, and your own inference in every key conclusion. When evidence is weak, lower confidence or flag it for validation; never invent facts.
+4. You may make at most {MAX_RESEARCH_ACTIONS} total tool calls. Stop researching once the information is sufficient.
+
+When finished, return valid JSON only, beginning with {{ and without Markdown:
+{{
+  "must_close_gaps": [{{"gap": "...", "competitor": "...", "urgency": "high/medium", "evidence": "review evidence or public information"}}],
+  "opportunity_windows": [{{"opportunity": "...", "rationale": "...", "evidence": "review evidence or public information"}}],
+  "core_advantages": [{{"advantage": "...", "how_to_amplify": "...", "evidence": "review evidence or public information"}}],
+  "priority_matrix": [{{"action": "...", "impact": "high/medium/low", "effort": "high/medium/low"}}],
+  "positioning_recommendation": "A 2–3 sentence differentiation recommendation",
+  "summary": "A 3–4 sentence strategic summary",
+  "research_assessment": {{"confidence": "high/medium/low", "coverage": "products and questions covered", "remaining_uncertainty": "questions that still need validation, or none"}}
+}}
+Return all user-facing values in English. Provide up to three items in each insight category and keep \"{main_app}\" as the decision-making point of view."""
+        task = f"Competitors: {', '.join(competitors) if competitors else 'None'}\n\nUser-feedback analysis by app:\n{analyses_text}"
+
     messages = [{"role": "user", "content": task}]
     tools = [REVIEW_EVIDENCE_TOOL] + ([WEB_SEARCH_TOOL] if tavily else [])
     research_trace = []
@@ -245,7 +324,7 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
                 if block.type == "tool_use" and block.name == "web_search":
                     research_actions += 1
                     if on_status:
-                        on_status("tool", f"🔎 搜索：{block.input.get('query')}")
+                        on_status("tool", f"🔎 Searching: {block.input.get('query')}" if language == "en" else f"🔎 搜索：{block.input.get('query')}")
                     query = block.input.get("query", "")
                     try:
                         results = tavily.search(query=query, search_depth="basic", max_results=3)
@@ -254,13 +333,13 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
                             for r in results.get("results", [])
                         )
                     except Exception:
-                        content = "搜索暂时不可用，请基于评论数据进行分析"
+                        content = "Search is temporarily unavailable; continue with review evidence only." if language == "en" else "搜索暂时不可用，请基于评论数据进行分析"
                     if on_status:
-                        on_status("done", f"✅ 搜索完成")
+                        on_status("done", "✅ Search complete" if language == "en" else "✅ 搜索完成")
                     research_trace.append({
-                        "action": "搜索最新信息",
+                        "action": "Search recent public information" if language == "en" else "搜索最新信息",
                         "target": query,
-                        "reason": "补充评论未覆盖的近期信息",
+                        "reason": "Supplement recent information not covered by reviews" if language == "en" else "补充评论未覆盖的近期信息",
                     })
                     tool_results.append({
                         "type": "tool_result",
@@ -272,10 +351,10 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
                     app_name = block.input.get("app_name", "")
                     focus = block.input.get("focus", "")
                     if on_status:
-                        on_status("tool", f"🧾 核查「{app_name}」评论证据：{focus}")
-                    content = _review_evidence(review_evidence, app_name, focus)
+                        on_status("tool", f"🧾 Checking review evidence for {app_name}: {focus}" if language == "en" else f"🧾 核查「{app_name}」评论证据：{focus}")
+                    content = _review_evidence(review_evidence, app_name, focus, language)
                     research_trace.append({
-                        "action": "核查原始评论",
+                        "action": "Inspect raw reviews" if language == "en" else "核查原始评论",
                         "target": app_name,
                         "reason": focus,
                     })
@@ -295,8 +374,8 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
                         result["research_trace"] = research_trace
                         result.setdefault("research_assessment", {
                             "confidence": "medium",
-                            "coverage": "基于已获取的评论分析",
-                            "remaining_uncertainty": "未提供研究自评",
+                            "coverage": "Based on the retrieved review analysis" if language == "en" else "基于已获取的评论分析",
+                            "remaining_uncertainty": "No research self-assessment was provided" if language == "en" else "未提供研究自评",
                         })
                         return result
             break
@@ -308,7 +387,7 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
 def run_agent(main_app: str, competitors: list[str], country: str = "cn",
-              count: int = 100, on_status=None, on_app_analysis=None) -> dict:
+              count: int = 100, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
     """
     分阶段运行：逐个抓取评论并分析，每完成一个 App 立即回调展示。
     最后生成竞品洞察。
@@ -319,37 +398,37 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
 
     for app_query in all_apps:
         if on_status:
-            on_status("tool", f"📥 搜索「{app_query}」...")
+            on_status("tool", f"📥 Finding {app_query}..." if language == "en" else f"📥 搜索「{app_query}」...")
 
         results = search_app(app_query, country=country)
         if not results:
             if on_status:
-                on_status("done", f"⚠️ 未找到「{app_query}」，已跳过")
+                on_status("done", f"⚠️ {app_query} was not found; skipped" if language == "en" else f"⚠️ 未找到「{app_query}」，已跳过")
             continue
 
         info = results[0]
         app_name = info["name"]
 
         if on_status:
-            on_status("tool", f"📥 抓取「{app_name}」评论...")
+            on_status("tool", f"📥 Retrieving reviews for {app_name}..." if language == "en" else f"📥 抓取「{app_name}」评论...")
 
-        reviews = get_reviews(app_name, info["id"], country=country, count=count)
+        reviews = get_reviews(app_name, info["id"], country=country, count=count, language=language)
         if not reviews:
             if on_status:
-                on_status("done", f"⚠️ 「{app_name}」暂无评论数据，已跳过")
+                on_status("done", f"⚠️ No review data for {app_name}; skipped" if language == "en" else f"⚠️ 「{app_name}」暂无评论数据，已跳过")
             continue
 
         trimmed = [r[:200] for r in reviews[:50]]
 
         if on_status:
-            on_status("tool", f"🤖 分析「{app_name}」用户评论...")
+            on_status("tool", f"🤖 Analyzing reviews for {app_name}..." if language == "en" else f"🤖 分析「{app_name}」用户评论...")
 
-        analysis = _analyze_app(app_name, trimmed)
+        analysis = _analyze_app(app_name, trimmed, language)
         app_analyses[app_name] = analysis
         review_evidence[app_name] = trimmed
 
         if on_status:
-            on_status("done", f"✅ 「{app_name}」分析完成")
+            on_status("done", f"✅ {app_name} analysis complete" if language == "en" else f"✅ 「{app_name}」分析完成")
 
         # 立即回调，让前端展示这个 App 的卡片
         if on_app_analysis:
@@ -359,14 +438,14 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
         return {}
 
     if on_status:
-        on_status("tool", "📊 生成竞品洞察与战略建议...")
+        on_status("tool", "📊 Generating competitive insights and recommendations..." if language == "en" else "📊 生成竞品洞察与战略建议...")
 
     insights = _generate_insights(
-        app_analyses, main_app, review_evidence, on_status=on_status
+        app_analyses, main_app, review_evidence, on_status=on_status, language=language
     )
 
     if on_status:
-        on_status("done", "✅ 竞品洞察完成")
+        on_status("done", "✅ Competitive insights complete" if language == "en" else "✅ 竞品洞察完成")
 
     return {
         "app_analyses": app_analyses,
@@ -375,11 +454,11 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
 
 
 # ── PRD 流式生成 ────────────────────────────────────────────────────────────
-def stream_prd_draft(opportunity: str, all_analyses: dict, insights: dict):
+def stream_prd_draft(opportunity: str, all_analyses: dict, insights: dict, language: str = "en"):
     analyses_text = json.dumps(all_analyses, ensure_ascii=False, indent=2)
     insights_text = json.dumps(insights, ensure_ascii=False, indent=2)
     prompt = (
-        PRD_GENERATION_PROMPT
+        (PRD_GENERATION_PROMPT_EN if language == "en" else PRD_GENERATION_PROMPT_ZH)
         .replace("{opportunity}", opportunity)
         .replace("{all_analyses}", analyses_text)
         .replace("{insights}", insights_text)
