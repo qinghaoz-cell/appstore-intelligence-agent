@@ -24,7 +24,8 @@ def search_app(query: str, country: str = "cn") -> list[dict]:
         return []
 
 
-def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 100) -> list[str]:
+def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 100,
+                language: str = "zh") -> list[str]:
     """
     获取用户评论：优先尝试 iTunes RSS Feed，若无数据则用 Tavily 搜索真实用户评价。
     """
@@ -34,7 +35,7 @@ def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 10
         return reviews
 
     # RSS 无数据，用 Tavily 搜索
-    return _get_tavily_reviews(app_name, count)
+    return _get_tavily_reviews(app_name, count, language)
 
 
 def _get_rss_reviews(app_id: int, country: str, count: int) -> list[str]:
@@ -66,7 +67,7 @@ def _get_rss_reviews(app_id: int, country: str, count: int) -> list[str]:
     return reviews[:count]
 
 
-def _get_tavily_reviews(app_name: str, count: int) -> list[str]:
+def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list[str]:
     """用 Tavily 搜索真实用户评价，来源包括知乎、贴吧、应用市场等。"""
     try:
         from tavily import TavilyClient
@@ -75,10 +76,11 @@ def _get_tavily_reviews(app_name: str, count: int) -> list[str]:
             return []
         tavily = TavilyClient(api_key=api_key)
 
-        queries = [
-            f"{app_name} 使用体验 评价 优缺点",
-            f"{app_name} app 用户反馈 吐槽",
-        ]
+        queries = (
+            [f"{app_name} user reviews pros cons", f"{app_name} app user feedback complaints"]
+            if language == "en" else
+            [f"{app_name} 使用体验 评价 优缺点", f"{app_name} app 用户反馈 吐槽"]
+        )
         reviews = []
         for query in queries:
             results = tavily.search(
