@@ -34,6 +34,12 @@ agent._generate_insights()  → 研究 Agent 循环：判断证据缺口，自�
 agent.stream_prd_draft()    → 用户选机会点后，流式生成 PRD Markdown
 ```
 
+### 双语展示与输出
+
+- `app.py` 顶部提供“语言 / Language”切换，默认中文；英文模式默认选择美国 App Store。
+- 语言选择会传给 `run_agent(..., language=...)`：英文模式不仅翻译界面，也要求评论洞察、研究轨迹和 PRD 草稿全部用英文输出。
+- 切换语言后需要重新运行分析，避免用一种语言的结果搭配另一种语言的页面标签。
+
 ---
 
 ## agent.py 关键函数
@@ -96,9 +102,9 @@ agent.stream_prd_draft()    → 用户选机会点后，流式生成 PRD Markdow
 ## scraper.py 逻辑
 
 ```
-get_reviews(app_name, app_id, country, count)
+get_reviews(app_name, app_id, country, count, language)
   ├── _get_rss_reviews()   # iTunes RSS Feed，免费无需认证，但经常返回空
-  └── _get_tavily_reviews() # RSS 为空时兜底，搜知乎/贴吧等用户评价
+  └── _get_tavily_reviews() # RSS 为空时兜底；按语言搜索中文或英文用户评价
 ```
 
 **注意：** iTunes RSS Feed 目前经常失效，大部分数据来自 Tavily 搜索。
