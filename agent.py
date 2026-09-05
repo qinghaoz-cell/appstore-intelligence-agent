@@ -13,7 +13,7 @@ if _env_path.exists():
 
 # 可在 Streamlit Secrets 或 .env 中通过 ANTHROPIC_MODEL 覆盖。
 # 集中管理模型名，避免某个调用仍使用失效模型。
-MODEL_NAME = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+MODEL_NAME = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 client = Anthropic()
 
 # Tavily 可选
