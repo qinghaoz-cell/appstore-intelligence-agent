@@ -25,7 +25,6 @@ except ImportError:
     tavily = None
 
 MAX_RESEARCH_ACTIONS = 5
-ANALYSIS_SAMPLE_SIZE = 50
 
 WEB_SEARCH_TOOL = {
     "name": "web_search",
@@ -50,37 +49,6 @@ REVIEW_EVIDENCE_TOOL = {
         },
         "required": ["app_name", "focus"]
     }
-}
-
-FEEDBACK_ANALYSIS_TOOL = {
-    "name": "submit_feedback_analysis",
-    "description": "Submit the structured analysis of the supplied user feedback.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "top_pain_points": {
-                "type": "array",
-                "items": {"type": "object", "properties": {
-                    "issue": {"type": "string"},
-                    "frequency": {"type": "string", "enum": ["high", "medium"]},
-                    "support_count": {"type": "integer", "minimum": 2},
-                    "example_quote": {"type": "string"},
-                }, "required": ["issue", "frequency", "support_count", "example_quote"]},
-            },
-            "top_positives": {
-                "type": "array",
-                "items": {"type": "object", "properties": {
-                    "strength": {"type": "string"},
-                    "frequency": {"type": "string", "enum": ["high", "medium", "low"]},
-                    "example_quote": {"type": "string"},
-                }, "required": ["strength", "frequency", "example_quote"]},
-            },
-            "overall_sentiment": {"type": "string", "enum": ["positive", "mixed", "negative"]},
-            "key_feature_requests": {"type": "array", "items": {"type": "string"}},
-            "summary": {"type": "string"},
-        },
-        "required": ["top_pain_points", "top_positives", "overall_sentiment", "key_feature_requests", "summary"],
-    },
 }
 
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
@@ -212,51 +180,38 @@ def _clean(text: str) -> str:
     return text.replace('"', '"').replace('"', '"').replace("\\", " ").replace("\n", " ").strip()
 
 
-def _select_review_sample(reviews: list[dict], limit: int = ANALYSIS_SAMPLE_SIZE) -> list[dict]:
-    """对近期评论去重后保留较大样本，供模型按主题聚类。"""
-    records = [review if isinstance(review, dict) else {"text": str(review)} for review in reviews]
-    selected, seen = [], set()
-    for review in records:
-        key = "".join(review.get("text", "").lower().split())
-        if not key or key in seen or len(selected) >= limit:
-            continue
-        selected.append(review)
-        seen.add(key)
-    return selected
-
-
-def _format_review_for_analysis(review: dict, language: str) -> str:
-    return _clean(review.get("text", ""))
-
-
-def _analyze_app(app_name: str, reviews: list[str], language: str = "en",
-                 feedback_source: str = "app_store") -> dict:
+def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dict:
     cleaned = [_clean(r) for r in reviews]
     reviews_text = "\n".join([f"- {r}" for r in cleaned])
-    source_note = (
-        "来源为 App Store 原始评论。" if feedback_source == "app_store" else
-        "来源为公开用户讨论补充，不是 App Store 原始评论；仅用于形成初步洞察，避免把它表述为 App Store 用户评价。"
-    )
-    source_note_en = (
-        "The source is original App Store reviews." if feedback_source == "app_store" else
-        "The source is supplementary public user feedback, not original App Store reviews. Use it only for preliminary insights and never describe it as App Store user reviews."
-    )
 
     if language == "zh":
-        prompt = f"""分析「{app_name}」的用户反馈，并调用 submit_feedback_analysis 提交结果。
+        prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
 
-{source_note}
-要求：先按语义将含义相近的评论聚成主题，再排序。pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 必须是评论原文，用「」。
-主要痛点只保留被至少 2 条不同评论支持的主题，并填写 support_count（该主题在当前样本中支持它的评论数）；频率 high 至少 5 条，medium 为 2-4 条。单条抱怨不要列为主要痛点。
+{{
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
+  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
+  "overall_sentiment": "positive/mixed/negative",
+  "key_feature_requests": ["需求1", "需求2", "需求3"],
+  "summary": "2-3句总结"
+}}
+
+要求：pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 用「」。
 如果数据极少，仍需输出合法 JSON，用已有信息尽力填充。
 
 用户反馈数据：
 {reviews_text}"""
     else:
-        prompt = f"""Analyze user feedback for \"{app_name}\" and call submit_feedback_analysis with the result.
+        prompt = f"""Analyze user feedback for \"{app_name}\". Return valid JSON only, beginning with {{:
 
-{source_note_en}
-Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. First cluster semantically similar reviews into themes, then rank themes. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence. Quotes must be real user-feedback excerpts. Only list a pain point if at least two distinct sampled reviews support its theme, and include that number as support_count; label high for 5+ supporting reviews and medium for 2–4. Do not list one-off complaints as key pain points.
+{{
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
+  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
+  "overall_sentiment": "positive/mixed/negative",
+  "key_feature_requests": ["request 1", "request 2", "request 3"],
+  "summary": "A 2–3 sentence summary"
+}}
+
+Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence.
 
 User feedback:
 {reviews_text}"""
@@ -268,15 +223,10 @@ User feedback:
             resp = client.messages.create(
                 model=MODEL_NAME,
                 max_tokens=4096,
-                tools=[FEEDBACK_ANALYSIS_TOOL],
-                tool_choice={"type": "tool", "name": "submit_feedback_analysis"},
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt}]
             )
-            tool_block = next(
-                (block for block in resp.content if block.type == "tool_use" and block.name == "submit_feedback_analysis"),
-                None,
-            )
-            result = tool_block.input if tool_block else {}
+            raw = resp.content[0].text if resp.content else ""
+            result = _parse_json(raw)
             if result:
                 break
         except Exception as exc:
@@ -319,7 +269,6 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
 2. 评论无法覆盖近期功能或市场变化时，才调用 web_search 搜索；
 3. 每条关键结论都要区分「评论证据」「公开信息」和「你的推断」。证据不足时，降低置信度或标为待验证，不要编造事实。
 4. 工具调用总数上限为 {MAX_RESEARCH_ACTIONS} 次；信息足够后立即输出结论。
-5. 各产品分析中的 feedback_source 标明输入来源：public_feedback 是公开用户讨论补充，不能写成 App Store 评论证据。
 
 收集完成后，直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
 {{
@@ -341,7 +290,6 @@ First assess whether the available evidence is sufficient:
 2. Call web_search only when reviews cannot answer a question about a recent feature change, product update, or market context.
 3. Distinguish review evidence, public information, and your own inference in every key conclusion. When evidence is weak, lower confidence or flag it for validation; never invent facts.
 4. You may make at most {MAX_RESEARCH_ACTIONS} total tool calls. Stop researching once the information is sufficient.
-5. Each app analysis includes feedback_source. Treat public_feedback as supplementary public discussion, never as App Store review evidence.
 
 When finished, return valid JSON only, beginning with {{ and without Markdown:
 {{
@@ -375,10 +323,9 @@ Return all user-facing values in English. Provide up to three items in each insi
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "web_search":
                     research_actions += 1
-                    tool_input = block.input if isinstance(block.input, dict) else {}
                     if on_status:
-                        on_status("tool", f"🔎 Searching: {tool_input.get('query')}" if language == "en" else f"🔎 搜索：{tool_input.get('query')}")
-                    query = tool_input.get("query", "")
+                        on_status("tool", f"🔎 Searching: {block.input.get('query')}" if language == "en" else f"🔎 搜索：{block.input.get('query')}")
+                    query = block.input.get("query", "")
                     try:
                         results = tavily.search(query=query, search_depth="basic", max_results=3)
                         content = "\n---\n".join(
@@ -401,9 +348,8 @@ Return all user-facing values in English. Provide up to three items in each insi
                     })
                 elif block.type == "tool_use" and block.name == "inspect_review_evidence":
                     research_actions += 1
-                    tool_input = block.input if isinstance(block.input, dict) else {}
-                    app_name = tool_input.get("app_name", "")
-                    focus = tool_input.get("focus", "")
+                    app_name = block.input.get("app_name", "")
+                    focus = block.input.get("focus", "")
                     if on_status:
                         on_status("tool", f"🧾 Checking review evidence for {app_name}: {focus}" if language == "en" else f"🧾 核查「{app_name}」评论证据：{focus}")
                     content = _review_evidence(review_evidence, app_name, focus, language)
@@ -439,39 +385,9 @@ Return all user-facing values in English. Provide up to three items in each insi
     raise RuntimeError("竞品洞察没有返回有效 JSON，请稍后重试。")
 
 
-def _fallback_insights(app_analyses: dict, main_app: str, language: str) -> dict:
-    """研究工具不可用时，基于已完成的评论分析继续交付可用的初步结论。"""
-    main_analysis = app_analyses.get(main_app) or next(iter(app_analyses.values()), {})
-    competitors = [name for name in app_analyses if name != main_app]
-    competitor = competitors[0] if competitors else ("竞品" if language == "zh" else "a competitor")
-    pain_points = main_analysis.get("top_pain_points", []) if isinstance(main_analysis, dict) else []
-    first_pain = pain_points[0].get("issue", "核心体验问题") if pain_points and isinstance(pain_points[0], dict) else "核心体验问题"
-    if language == "zh":
-        return {
-            "must_close_gaps": [{"gap": f"围绕「{first_pain}」优化核心体验", "competitor": competitor, "urgency": "medium", "evidence": "基于当前用户反馈的初步判断"}],
-            "opportunity_windows": [{"opportunity": f"降低「{first_pain}」带来的用户成本", "rationale": "将高频反馈转化为可验证的体验优化", "evidence": "基于当前用户反馈"}],
-            "core_advantages": [],
-            "priority_matrix": [{"action": f"优先核查并优化「{first_pain}」", "impact": "high", "effort": "medium"}],
-            "positioning_recommendation": "先围绕已识别的高频问题完成体验验证，再与竞品方案做进一步对比。",
-            "summary": "已基于各 App 的用户反馈生成初步竞品判断；后续可补充公开产品信息以提高置信度。",
-            "research_assessment": {"confidence": "low", "coverage": "已完成的用户反馈分析", "remaining_uncertainty": "需要补充竞品功能与市场信息验证"},
-            "research_trace": [],
-        }
-    return {
-        "must_close_gaps": [{"gap": f"Improve the core experience around {first_pain}", "competitor": competitor, "urgency": "medium", "evidence": "Initial assessment based on current user feedback"}],
-        "opportunity_windows": [{"opportunity": f"Reduce the user cost created by {first_pain}", "rationale": "Turn recurring feedback into a testable experience improvement", "evidence": "Based on current user feedback"}],
-        "core_advantages": [],
-        "priority_matrix": [{"action": f"Validate and improve {first_pain}", "impact": "high", "effort": "medium"}],
-        "positioning_recommendation": "Validate the recurring experience issue first, then deepen the competitor comparison.",
-        "summary": "Initial competitive conclusions are based on the completed user-feedback analysis; public product information can be added later to raise confidence.",
-        "research_assessment": {"confidence": "low", "coverage": "Completed user-feedback analysis", "remaining_uncertainty": "Competitor features and market context require validation"},
-        "research_trace": [],
-    }
-
-
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
 def run_agent(main_app: str, competitors: list[str], country: str = "cn",
-              count: int = 50, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
+              count: int = 100, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
     """
     分阶段运行：逐个抓取评论并分析，每完成一个 App 立即回调展示。
     最后生成竞品洞察。
@@ -502,22 +418,14 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
                 on_status("done", f"⚠️ No review data for {app_name}; skipped" if language == "en" else f"⚠️ 「{app_name}」暂无评论数据，已跳过")
             continue
 
-        sampled_reviews = _select_review_sample(reviews)
-        trimmed = [_format_review_for_analysis(r, language)[:260] for r in sampled_reviews]
-        source_types = {r.get("sample_source") for r in sampled_reviews}
-        feedback_source = "app_store" if source_types <= {"recent", "app_store_fallback"} else "public_feedback"
+        trimmed = [r[:200] for r in reviews[:50]]
 
         if on_status:
             on_status("tool", f"🤖 Analyzing reviews for {app_name}..." if language == "en" else f"🤖 分析「{app_name}」用户评论...")
 
-        analysis = _analyze_app(app_name, trimmed, language, feedback_source=feedback_source)
-        analysis["review_sample"] = {
-            "total": len(sampled_reviews),
-            "recent": sum(r.get("sample_source") in {"recent", "both"} for r in sampled_reviews),
-        }
-        analysis["feedback_source"] = feedback_source
+        analysis = _analyze_app(app_name, trimmed, language)
         app_analyses[app_name] = analysis
-        review_evidence[app_name] = [r.get("text", "")[:260] for r in sampled_reviews]
+        review_evidence[app_name] = trimmed
 
         if on_status:
             on_status("done", f"✅ {app_name} analysis complete" if language == "en" else f"✅ 「{app_name}」分析完成")
@@ -532,12 +440,9 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     if on_status:
         on_status("tool", "📊 Generating competitive insights and recommendations..." if language == "en" else "📊 生成竞品洞察与战略建议...")
 
-    try:
-        insights = _generate_insights(
-            app_analyses, main_app, review_evidence, on_status=on_status, language=language
-        )
-    except Exception:
-        insights = _fallback_insights(app_analyses, main_app, language)
+    insights = _generate_insights(
+        app_analyses, main_app, review_evidence, on_status=on_status, language=language
+    )
 
     if on_status:
         on_status("done", "✅ Competitive insights complete" if language == "en" else "✅ 竞品洞察完成")
