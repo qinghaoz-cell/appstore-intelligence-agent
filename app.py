@@ -144,6 +144,8 @@ if "app_analyses" not in st.session_state:
 
 app_analyses = st.session_state["app_analyses"]
 insights = st.session_state["insights"]
+if not isinstance(insights, dict):
+    insights = {"summary": str(insights), "must_close_gaps": [], "opportunity_windows": []}
 main_app_name = st.session_state["main_app_name"]
 result_language = st.session_state.get("result_language", language)
 
@@ -173,6 +175,10 @@ for col, (key, heading, hint, field, supporting) in zip(cols, sections):
         st.subheader(t[heading])
         st.caption(t[hint])
         for item in insights.get(key, []):
+            if not isinstance(item, dict):
+                st.markdown(f"**{item}**")
+                st.write("")
+                continue
             prefix = "🔴 " if key == "must_close_gaps" and item.get("urgency") == "high" else ""
             st.markdown(f"{prefix}**{item.get(field, '')}**")
             if key == "must_close_gaps":
@@ -184,6 +190,8 @@ for col, (key, heading, hint, field, supporting) in zip(cols, sections):
             st.write("")
 
 assessment, trace = insights.get("research_assessment", {}), insights.get("research_trace", [])
+assessment = assessment if isinstance(assessment, dict) else {}
+trace = trace if isinstance(trace, list) else []
 if assessment or trace:
     st.subheader(t["research"])
     if assessment:
@@ -194,11 +202,14 @@ if assessment or trace:
     if trace:
         with st.expander(t["trace"].format(count=len(trace)), expanded=False):
             for index, item in enumerate(trace, start=1):
+                if not isinstance(item, dict):
+                    st.markdown(f"{index}. {item}")
+                    continue
                 st.markdown(f"{index}. **{item.get('action', '')}** · {item.get('target', '')}")
                 st.caption(f"{t['reason']}: {item.get('reason', '')}")
 
 st.subheader(t["priority"])
-priority = insights.get("priority_matrix", [])
+priority = [item for item in insights.get("priority_matrix", []) if isinstance(item, dict)]
 if priority:
     st.table([{t["action"]: item.get("action", ""), t["impact"]: t.get(item.get("impact", ""), item.get("impact", "")), t["effort"]: t.get(item.get("effort", ""), item.get("effort", ""))} for item in priority])
 st.subheader(t["positioning"])
@@ -209,9 +220,12 @@ st.success(insights.get("summary", ""))
 st.divider()
 st.header(t["step3"])
 st.caption(t["step3_hint"])
-options = ([f"{t['gap_prefix']} {item['gap']}" for item in insights.get("must_close_gaps", [])] + [f"{t['opportunity_prefix']} {item['opportunity']}" for item in insights.get("opportunity_windows", [])])
-selected = st.selectbox(t["select"], options)
-if st.button(t["generate"], type="primary"):
+options = (
+    [f"{t['gap_prefix']} {item.get('gap', '')}" for item in insights.get("must_close_gaps", []) if isinstance(item, dict)]
+    + [f"{t['opportunity_prefix']} {item.get('opportunity', '')}" for item in insights.get("opportunity_windows", []) if isinstance(item, dict)]
+)
+selected = st.selectbox(t["select"], options) if options else None
+if selected and st.button(t["generate"], type="primary"):
     placeholder, full_text, pending = st.empty(), "", ""
     for chunk in stream_prd_draft(selected, app_analyses, insights, language=result_language):
         full_text += chunk
