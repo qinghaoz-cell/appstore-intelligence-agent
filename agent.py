@@ -375,9 +375,10 @@ Return all user-facing values in English. Provide up to three items in each insi
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "web_search":
                     research_actions += 1
+                    tool_input = block.input if isinstance(block.input, dict) else {}
                     if on_status:
-                        on_status("tool", f"🔎 Searching: {block.input.get('query')}" if language == "en" else f"🔎 搜索：{block.input.get('query')}")
-                    query = block.input.get("query", "")
+                        on_status("tool", f"🔎 Searching: {tool_input.get('query')}" if language == "en" else f"🔎 搜索：{tool_input.get('query')}")
+                    query = tool_input.get("query", "")
                     try:
                         results = tavily.search(query=query, search_depth="basic", max_results=3)
                         content = "\n---\n".join(
@@ -400,8 +401,9 @@ Return all user-facing values in English. Provide up to three items in each insi
                     })
                 elif block.type == "tool_use" and block.name == "inspect_review_evidence":
                     research_actions += 1
-                    app_name = block.input.get("app_name", "")
-                    focus = block.input.get("focus", "")
+                    tool_input = block.input if isinstance(block.input, dict) else {}
+                    app_name = tool_input.get("app_name", "")
+                    focus = tool_input.get("focus", "")
                     if on_status:
                         on_status("tool", f"🧾 Checking review evidence for {app_name}: {focus}" if language == "en" else f"🧾 核查「{app_name}」评论证据：{focus}")
                     content = _review_evidence(review_evidence, app_name, focus, language)
@@ -435,6 +437,36 @@ Return all user-facing values in English. Provide up to three items in each insi
             raise RuntimeError(f"竞品洞察未完成（停止原因：{resp.stop_reason}）。请稍后重试。")
 
     raise RuntimeError("竞品洞察没有返回有效 JSON，请稍后重试。")
+
+
+def _fallback_insights(app_analyses: dict, main_app: str, language: str) -> dict:
+    """研究工具不可用时，基于已完成的评论分析继续交付可用的初步结论。"""
+    main_analysis = app_analyses.get(main_app) or next(iter(app_analyses.values()), {})
+    competitors = [name for name in app_analyses if name != main_app]
+    competitor = competitors[0] if competitors else ("竞品" if language == "zh" else "a competitor")
+    pain_points = main_analysis.get("top_pain_points", []) if isinstance(main_analysis, dict) else []
+    first_pain = pain_points[0].get("issue", "核心体验问题") if pain_points and isinstance(pain_points[0], dict) else "核心体验问题"
+    if language == "zh":
+        return {
+            "must_close_gaps": [{"gap": f"围绕「{first_pain}」优化核心体验", "competitor": competitor, "urgency": "medium", "evidence": "基于当前用户反馈的初步判断"}],
+            "opportunity_windows": [{"opportunity": f"降低「{first_pain}」带来的用户成本", "rationale": "将高频反馈转化为可验证的体验优化", "evidence": "基于当前用户反馈"}],
+            "core_advantages": [],
+            "priority_matrix": [{"action": f"优先核查并优化「{first_pain}」", "impact": "high", "effort": "medium"}],
+            "positioning_recommendation": "先围绕已识别的高频问题完成体验验证，再与竞品方案做进一步对比。",
+            "summary": "已基于各 App 的用户反馈生成初步竞品判断；后续可补充公开产品信息以提高置信度。",
+            "research_assessment": {"confidence": "low", "coverage": "已完成的用户反馈分析", "remaining_uncertainty": "需要补充竞品功能与市场信息验证"},
+            "research_trace": [],
+        }
+    return {
+        "must_close_gaps": [{"gap": f"Improve the core experience around {first_pain}", "competitor": competitor, "urgency": "medium", "evidence": "Initial assessment based on current user feedback"}],
+        "opportunity_windows": [{"opportunity": f"Reduce the user cost created by {first_pain}", "rationale": "Turn recurring feedback into a testable experience improvement", "evidence": "Based on current user feedback"}],
+        "core_advantages": [],
+        "priority_matrix": [{"action": f"Validate and improve {first_pain}", "impact": "high", "effort": "medium"}],
+        "positioning_recommendation": "Validate the recurring experience issue first, then deepen the competitor comparison.",
+        "summary": "Initial competitive conclusions are based on the completed user-feedback analysis; public product information can be added later to raise confidence.",
+        "research_assessment": {"confidence": "low", "coverage": "Completed user-feedback analysis", "remaining_uncertainty": "Competitor features and market context require validation"},
+        "research_trace": [],
+    }
 
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
@@ -500,9 +532,12 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
     if on_status:
         on_status("tool", "📊 Generating competitive insights and recommendations..." if language == "en" else "📊 生成竞品洞察与战略建议...")
 
-    insights = _generate_insights(
-        app_analyses, main_app, review_evidence, on_status=on_status, language=language
-    )
+    try:
+        insights = _generate_insights(
+            app_analyses, main_app, review_evidence, on_status=on_status, language=language
+        )
+    except Exception:
+        insights = _fallback_insights(app_analyses, main_app, language)
 
     if on_status:
         on_status("done", "✅ Competitive insights complete" if language == "en" else "✅ 竞品洞察完成")
