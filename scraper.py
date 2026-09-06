@@ -28,16 +28,15 @@ def search_app(query: str, country: str = "cn") -> list[dict]:
 def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 100,
                 language: str = "zh") -> list[dict]:
     """
-    获取用户评论：优先取较大范围的近期 App Store 评论，RSS 无数据时再用 Tavily 搜索摘要兜底。
+    获取用户评论：仅使用 App Store 的近期原始评论。
 
-    痛点优先级由上层对评论主题的聚类覆盖量决定，不依赖各渠道不稳定的点赞数据。
+    痛点优先级由上层对评论主题的聚类覆盖量决定。搜索摘要不能冒充用户评论，
+    因此 RSS 无数据时返回空，由调用方明确提示而不是混入其他网页内容。
     """
     reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mostrecent", "recent"))
     if reviews:
         return reviews[:count]
-
-    # RSS 无数据，用 Tavily 搜索
-    return _get_tavily_reviews(app_name, count, language)
+    return []
 
 
 def _to_int(value) -> int:
@@ -75,14 +74,21 @@ def _get_rss_reviews(app_id: int, country: str, count: int, sort_by: str,
             f"https://itunes.apple.com/{country}/rss/customerreviews/"
             f"page={page}/id={app_id}/sortby={sort_by}/json"
         )
-        try:
-            # Apple 的旧 RSS 偶发缓存空 feed；加缓存参数可避免把暂时空结果当成无评论。
-            resp = requests.get(url, params={"_": int(time.time() * 1000)}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            break
-        entries = data.get("feed", {}).get("entry", [])
+        entries = []
+        # Apple 的旧 RSS 偶发缓存空 feed；使用不同缓存参数重试，避免把暂时空结果当成无评论。
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    url,
+                    params={"_": f"{int(time.time() * 1000)}-{page}-{attempt}"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                entries = resp.json().get("feed", {}).get("entry", []) or []
+                if entries:
+                    break
+            except Exception:
+                continue
         if not entries:
             break
         for entry in entries:
