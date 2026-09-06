@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 
 
@@ -26,74 +25,34 @@ def search_app(query: str, country: str = "cn") -> list[dict]:
 
 
 def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 100,
-                language: str = "zh") -> list[dict]:
+                language: str = "zh") -> list[str]:
     """
-    获取用户反馈：优先使用 App Store 的近期原始评论。
-
-    RSS 暂时不可用时，补充公开用户讨论，保证分析可继续进行；每条记录都会
-    标注来源，供上层在结论中区分 App Store 评论与公开反馈。
+    获取用户评论：优先尝试 iTunes RSS Feed，若无数据则用 Tavily 搜索真实用户评价。
     """
-    reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mostrecent", "recent"))
-    # 部分应用的「最新」列表会被 Apple RSS 间歇性返回为空；仅在此时改用同一
-    # App Store 源的另一排序列表。该排序只用于保证取数，不参与后续痛点聚类。
-    if not reviews:
-        reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mosthelpful", "app_store_fallback"))
+    # 先试 RSS Feed
+    reviews = _get_rss_reviews(app_id, country, count)
     if reviews:
-        return reviews[:count]
+        return reviews
 
+    # RSS 无数据，用 Tavily 搜索
     return _get_tavily_reviews(app_name, count, language)
 
 
-def _to_int(value) -> int:
-    try:
-        return int(value.get("label", 0)) if isinstance(value, dict) else int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _merge_reviews(reviews: list[dict]) -> list[dict]:
-    """按评论文本去重，并保留同一评论中更完整的互动信息。"""
-    merged = {}
-    for review in reviews:
-        text = review.get("text", "").strip()
-        key = "".join(text.lower().split())
-        if not key:
-            continue
-        existing = merged.get(key)
-        if not existing:
-            merged[key] = review
-            continue
-        existing["vote_sum"] = max(existing.get("vote_sum", 0), review.get("vote_sum", 0))
-        existing["vote_count"] = max(existing.get("vote_count", 0), review.get("vote_count", 0))
-        if existing.get("sample_source") != review.get("sample_source"):
-            existing["sample_source"] = "both"
-    return list(merged.values())
-
-
-def _get_rss_reviews(app_id: int, country: str, count: int, sort_by: str,
-                     sample_source: str) -> list[dict]:
+def _get_rss_reviews(app_id: int, country: str, count: int) -> list[str]:
     reviews = []
-    max_pages = min(10, (count + 49) // 50)
+    max_pages = min(10, (count // 50) + 1)
     for page in range(1, max_pages + 1):
         url = (
             f"https://itunes.apple.com/{country}/rss/customerreviews/"
-            f"page={page}/id={app_id}/sortby={sort_by}/json"
+            f"page={page}/id={app_id}/sortby=mosthelpful/json"
         )
-        entries = []
-        # Apple 的旧 RSS 偶发缓存空 feed；使用不同缓存参数重试，避免把暂时空结果当成无评论。
-        for attempt in range(3):
-            try:
-                resp = requests.get(
-                    url,
-                    params={"_": f"{int(time.time() * 1000)}-{page}-{attempt}"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                entries = resp.json().get("feed", {}).get("entry", []) or []
-                if entries:
-                    break
-            except Exception:
-                continue
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            break
+        entries = data.get("feed", {}).get("entry", [])
         if not entries:
             break
         for entry in entries:
@@ -102,21 +61,14 @@ def _get_rss_reviews(app_id: int, country: str, count: int, sort_by: str,
             body = entry.get("content", {})
             text = body.get("label", "") if isinstance(body, dict) else ""
             if text:
-                reviews.append({
-                    "text": text,
-                    "rating": _to_int(entry.get("im:rating")),
-                    "vote_sum": _to_int(entry.get("im:voteSum")),
-                    "vote_count": _to_int(entry.get("im:voteCount")),
-                    "updated": entry.get("updated", {}).get("label", ""),
-                    "sample_source": sample_source,
-                })
+                reviews.append(text)
         if len(reviews) >= count:
             break
     return reviews[:count]
 
 
-def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list[dict]:
-    """补充公开用户讨论；不将其标记为 App Store 评论。"""
+def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list[str]:
+    """用 Tavily 搜索真实用户评价，来源包括知乎、贴吧、应用市场等。"""
     try:
         from tavily import TavilyClient
         api_key = os.getenv("TAVILY_API_KEY", "")
@@ -144,14 +96,7 @@ def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list
                     for chunk in content.split("。"):
                         chunk = chunk.strip()
                         if len(chunk) > 20:
-                            reviews.append({
-                                "text": chunk,
-                                "rating": 0,
-                                "vote_sum": 0,
-                                "vote_count": 0,
-                                "updated": "",
-                                "sample_source": "public_feedback",
-                            })
+                            reviews.append(chunk)
             if len(reviews) >= count:
                 break
 
