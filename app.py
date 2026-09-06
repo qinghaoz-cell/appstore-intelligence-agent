@@ -125,7 +125,9 @@ if submitted and main_app.strip():
             st.stop()
         except Exception as exc:
             status.update(label=t["failed"], state="error")
-            st.error(f"{t['unavailable']} ({exc.__class__.__name__})")
+            detail = str(exc).strip().replace("\n", " ")[:500]
+            suffix = f"{exc.__class__.__name__}{f': {detail}' if detail else ''}"
+            st.error(f"{t['unavailable']} ({suffix})")
             st.stop()
         if not result:
             status.update(label=t["no_data"], state="error")
