@@ -25,7 +25,7 @@ except ImportError:
     tavily = None
 
 MAX_RESEARCH_ACTIONS = 5
-ANALYSIS_SAMPLE_SIZE = 150
+ANALYSIS_SAMPLE_SIZE = 50
 
 WEB_SEARCH_TOOL = {
     "name": "web_search",
@@ -406,7 +406,7 @@ Return all user-facing values in English. Provide up to three items in each insi
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
 def run_agent(main_app: str, competitors: list[str], country: str = "cn",
-              count: int = 200, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
+              count: int = 50, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
     """
     分阶段运行：逐个抓取评论并分析，每完成一个 App 立即回调展示。
     最后生成竞品洞察。
