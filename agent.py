@@ -25,6 +25,7 @@ except ImportError:
     tavily = None
 
 MAX_RESEARCH_ACTIONS = 5
+ANALYSIS_SAMPLE_SIZE = 150
 
 WEB_SEARCH_TOOL = {
     "name": "web_search",
@@ -180,6 +181,23 @@ def _clean(text: str) -> str:
     return text.replace('"', '"').replace('"', '"').replace("\\", " ").replace("\n", " ").strip()
 
 
+def _select_review_sample(reviews: list[dict], limit: int = ANALYSIS_SAMPLE_SIZE) -> list[dict]:
+    """对近期评论去重后保留较大样本，供模型按主题聚类。"""
+    records = [review if isinstance(review, dict) else {"text": str(review)} for review in reviews]
+    selected, seen = [], set()
+    for review in records:
+        key = "".join(review.get("text", "").lower().split())
+        if not key or key in seen or len(selected) >= limit:
+            continue
+        selected.append(review)
+        seen.add(key)
+    return selected
+
+
+def _format_review_for_analysis(review: dict, language: str) -> str:
+    return _clean(review.get("text", ""))
+
+
 def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dict:
     cleaned = [_clean(r) for r in reviews]
     reviews_text = "\n".join([f"- {r}" for r in cleaned])
@@ -188,14 +206,15 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dic
         prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
 
 {{
-  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium", "support_count": 0, "example_quote": "「原文」"}}],
   "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
   "overall_sentiment": "positive/mixed/negative",
   "key_feature_requests": ["需求1", "需求2", "需求3"],
   "summary": "2-3句总结"
 }}
 
-要求：pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 用「」。
+要求：先按语义将含义相近的评论聚成主题，再排序。pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 必须是评论原文，用「」。
+主要痛点只保留被至少 2 条不同评论支持的主题，并填写 support_count（该主题在当前样本中支持它的评论数）；频率 high 至少 5 条，medium 为 2-4 条。单条抱怨不要列为主要痛点。
 如果数据极少，仍需输出合法 JSON，用已有信息尽力填充。
 
 用户反馈数据：
@@ -204,14 +223,14 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dic
         prompt = f"""Analyze user feedback for \"{app_name}\". Return valid JSON only, beginning with {{:
 
 {{
-  "top_pain_points": [{{"issue": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
+  "top_pain_points": [{{"issue": "...", "frequency": "high/medium", "support_count": 0, "example_quote": "a real quote"}}],
   "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
   "overall_sentiment": "positive/mixed/negative",
   "key_feature_requests": ["request 1", "request 2", "request 3"],
   "summary": "A 2–3 sentence summary"
 }}
 
-Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence.
+Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. First cluster semantically similar reviews into themes, then rank themes. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence. Quotes must be real review text. Only list a pain point if at least two distinct sampled reviews support its theme, and include that number as support_count; label high for 5+ supporting reviews and medium for 2–4. Do not list one-off complaints as key pain points.
 
 User feedback:
 {reviews_text}"""
@@ -387,7 +406,7 @@ Return all user-facing values in English. Provide up to three items in each insi
 
 # ── Agent 主循环 ────────────────────────────────────────────────────────────
 def run_agent(main_app: str, competitors: list[str], country: str = "cn",
-              count: int = 100, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
+              count: int = 200, on_status=None, on_app_analysis=None, language: str = "zh") -> dict:
     """
     分阶段运行：逐个抓取评论并分析，每完成一个 App 立即回调展示。
     最后生成竞品洞察。
@@ -418,14 +437,19 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
                 on_status("done", f"⚠️ No review data for {app_name}; skipped" if language == "en" else f"⚠️ 「{app_name}」暂无评论数据，已跳过")
             continue
 
-        trimmed = [r[:200] for r in reviews[:50]]
+        sampled_reviews = _select_review_sample(reviews)
+        trimmed = [_format_review_for_analysis(r, language)[:260] for r in sampled_reviews]
 
         if on_status:
             on_status("tool", f"🤖 Analyzing reviews for {app_name}..." if language == "en" else f"🤖 分析「{app_name}」用户评论...")
 
         analysis = _analyze_app(app_name, trimmed, language)
+        analysis["review_sample"] = {
+            "total": len(sampled_reviews),
+            "recent": sum(r.get("sample_source") in {"recent", "both"} for r in sampled_reviews),
+        }
         app_analyses[app_name] = analysis
-        review_evidence[app_name] = trimmed
+        review_evidence[app_name] = [r.get("text", "")[:260] for r in sampled_reviews]
 
         if on_status:
             on_status("done", f"✅ {app_name} analysis complete" if language == "en" else f"✅ 「{app_name}」分析完成")
