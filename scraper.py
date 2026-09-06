@@ -34,6 +34,10 @@ def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 10
     因此 RSS 无数据时返回空，由调用方明确提示而不是混入其他网页内容。
     """
     reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mostrecent", "recent"))
+    # 部分应用的「最新」列表会被 Apple RSS 间歇性返回为空；仅在此时改用同一
+    # App Store 源的另一排序列表。该排序只用于保证取数，不参与后续痛点聚类。
+    if not reviews:
+        reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mosthelpful", "app_store_fallback"))
     if reviews:
         return reviews[:count]
     return []
