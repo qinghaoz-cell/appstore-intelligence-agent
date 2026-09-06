@@ -52,6 +52,37 @@ REVIEW_EVIDENCE_TOOL = {
     }
 }
 
+FEEDBACK_ANALYSIS_TOOL = {
+    "name": "submit_feedback_analysis",
+    "description": "Submit the structured analysis of the supplied user feedback.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "top_pain_points": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "issue": {"type": "string"},
+                    "frequency": {"type": "string", "enum": ["high", "medium"]},
+                    "support_count": {"type": "integer", "minimum": 2},
+                    "example_quote": {"type": "string"},
+                }, "required": ["issue", "frequency", "support_count", "example_quote"]},
+            },
+            "top_positives": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "strength": {"type": "string"},
+                    "frequency": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "example_quote": {"type": "string"},
+                }, "required": ["strength", "frequency", "example_quote"]},
+            },
+            "overall_sentiment": {"type": "string", "enum": ["positive", "mixed", "negative"]},
+            "key_feature_requests": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": "string"},
+        },
+        "required": ["top_pain_points", "top_positives", "overall_sentiment", "key_feature_requests", "summary"],
+    },
+}
+
 # ── PRD 生成提示词 ──────────────────────────────────────────────────────────
 PRD_GENERATION_PROMPT_ZH = """你是一位资深产品经理，请基于以下用户研究和竞品分析，为选定的机会点生成结构化需求草稿。
 
@@ -212,15 +243,7 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en",
     )
 
     if language == "zh":
-        prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
-
-{{
-  "top_pain_points": [{{"issue": "...", "frequency": "high/medium", "support_count": 0, "example_quote": "「原文」"}}],
-  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "「原文或概括」"}}],
-  "overall_sentiment": "positive/mixed/negative",
-  "key_feature_requests": ["需求1", "需求2", "需求3"],
-  "summary": "2-3句总结"
-}}
+        prompt = f"""分析「{app_name}」的用户反馈，并调用 submit_feedback_analysis 提交结果。
 
 {source_note}
 要求：先按语义将含义相近的评论聚成主题，再排序。pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 必须是评论原文，用「」。
@@ -230,15 +253,7 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en",
 用户反馈数据：
 {reviews_text}"""
     else:
-        prompt = f"""Analyze user feedback for \"{app_name}\". Return valid JSON only, beginning with {{:
-
-{{
-  "top_pain_points": [{{"issue": "...", "frequency": "high/medium", "support_count": 0, "example_quote": "a real quote"}}],
-  "top_positives": [{{"strength": "...", "frequency": "high/medium/low", "example_quote": "a real quote or faithful excerpt"}}],
-  "overall_sentiment": "positive/mixed/negative",
-  "key_feature_requests": ["request 1", "request 2", "request 3"],
-  "summary": "A 2–3 sentence summary"
-}}
+        prompt = f"""Analyze user feedback for \"{app_name}\" and call submit_feedback_analysis with the result.
 
 {source_note_en}
 Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. First cluster semantically similar reviews into themes, then rank themes. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence. Quotes must be real user-feedback excerpts. Only list a pain point if at least two distinct sampled reviews support its theme, and include that number as support_count; label high for 5+ supporting reviews and medium for 2–4. Do not list one-off complaints as key pain points.
@@ -253,10 +268,15 @@ User feedback:
             resp = client.messages.create(
                 model=MODEL_NAME,
                 max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
+                tools=[FEEDBACK_ANALYSIS_TOOL],
+                tool_choice={"type": "tool", "name": "submit_feedback_analysis"},
+                messages=[{"role": "user", "content": prompt}],
             )
-            raw = resp.content[0].text if resp.content else ""
-            result = _parse_json(raw)
+            tool_block = next(
+                (block for block in resp.content if block.type == "tool_use" and block.name == "submit_feedback_analysis"),
+                None,
+            )
+            result = tool_block.input if tool_block else {}
             if result:
                 break
         except Exception as exc:
