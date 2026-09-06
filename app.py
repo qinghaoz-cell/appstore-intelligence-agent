@@ -117,7 +117,7 @@ if submitted and main_app.strip():
         try:
             result = run_agent(
                 main_app=main_app.strip(), competitors=competitors, country=country,
-                count=100, on_status=on_status, on_app_analysis=on_app_analysis, language=language,
+                count=200, on_status=on_status, on_app_analysis=on_app_analysis, language=language,
             )
         except RuntimeError as exc:
             status.update(label=t["failed"], state="error")
