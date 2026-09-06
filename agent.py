@@ -198,9 +198,18 @@ def _format_review_for_analysis(review: dict, language: str) -> str:
     return _clean(review.get("text", ""))
 
 
-def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dict:
+def _analyze_app(app_name: str, reviews: list[str], language: str = "en",
+                 feedback_source: str = "app_store") -> dict:
     cleaned = [_clean(r) for r in reviews]
     reviews_text = "\n".join([f"- {r}" for r in cleaned])
+    source_note = (
+        "来源为 App Store 原始评论。" if feedback_source == "app_store" else
+        "来源为公开用户讨论补充，不是 App Store 原始评论；仅用于形成初步洞察，避免把它表述为 App Store 用户评价。"
+    )
+    source_note_en = (
+        "The source is original App Store reviews." if feedback_source == "app_store" else
+        "The source is supplementary public user feedback, not original App Store reviews. Use it only for preliminary insights and never describe it as App Store user reviews."
+    )
 
     if language == "zh":
         prompt = f"""分析「{app_name}」的用户反馈，直接输出 JSON，以 {{ 开头：
@@ -213,6 +222,7 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dic
   "summary": "2-3句总结"
 }}
 
+{source_note}
 要求：先按语义将含义相近的评论聚成主题，再排序。pain_points 和 positives 各 3 条，若数据不足可适当减少，example_quote 必须是评论原文，用「」。
 主要痛点只保留被至少 2 条不同评论支持的主题，并填写 support_count（该主题在当前样本中支持它的评论数）；频率 high 至少 5 条，medium 为 2-4 条。单条抱怨不要列为主要痛点。
 如果数据极少，仍需输出合法 JSON，用已有信息尽力填充。
@@ -230,7 +240,8 @@ def _analyze_app(app_name: str, reviews: list[str], language: str = "en") -> dic
   "summary": "A 2–3 sentence summary"
 }}
 
-Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. First cluster semantically similar reviews into themes, then rank themes. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence. Quotes must be real review text. Only list a pain point if at least two distinct sampled reviews support its theme, and include that number as support_count; label high for 5+ supporting reviews and medium for 2–4. Do not list one-off complaints as key pain points.
+{source_note_en}
+Return all user-facing values in English. If reviews are in another language, translate their meaning faithfully. First cluster semantically similar reviews into themes, then rank themes. Provide up to three pain points and positives; when data is limited, return fewer items rather than inventing evidence. Quotes must be real user-feedback excerpts. Only list a pain point if at least two distinct sampled reviews support its theme, and include that number as support_count; label high for 5+ supporting reviews and medium for 2–4. Do not list one-off complaints as key pain points.
 
 User feedback:
 {reviews_text}"""
@@ -288,6 +299,7 @@ def _generate_insights(app_analyses: dict, main_app: str, review_evidence: dict,
 2. 评论无法覆盖近期功能或市场变化时，才调用 web_search 搜索；
 3. 每条关键结论都要区分「评论证据」「公开信息」和「你的推断」。证据不足时，降低置信度或标为待验证，不要编造事实。
 4. 工具调用总数上限为 {MAX_RESEARCH_ACTIONS} 次；信息足够后立即输出结论。
+5. 各产品分析中的 feedback_source 标明输入来源：public_feedback 是公开用户讨论补充，不能写成 App Store 评论证据。
 
 收集完成后，直接输出 JSON，以 {{ 开头，不要 markdown 代码块：
 {{
@@ -309,6 +321,7 @@ First assess whether the available evidence is sufficient:
 2. Call web_search only when reviews cannot answer a question about a recent feature change, product update, or market context.
 3. Distinguish review evidence, public information, and your own inference in every key conclusion. When evidence is weak, lower confidence or flag it for validation; never invent facts.
 4. You may make at most {MAX_RESEARCH_ACTIONS} total tool calls. Stop researching once the information is sufficient.
+5. Each app analysis includes feedback_source. Treat public_feedback as supplementary public discussion, never as App Store review evidence.
 
 When finished, return valid JSON only, beginning with {{ and without Markdown:
 {{
@@ -439,15 +452,18 @@ def run_agent(main_app: str, competitors: list[str], country: str = "cn",
 
         sampled_reviews = _select_review_sample(reviews)
         trimmed = [_format_review_for_analysis(r, language)[:260] for r in sampled_reviews]
+        source_types = {r.get("sample_source") for r in sampled_reviews}
+        feedback_source = "app_store" if source_types <= {"recent", "app_store_fallback"} else "public_feedback"
 
         if on_status:
             on_status("tool", f"🤖 Analyzing reviews for {app_name}..." if language == "en" else f"🤖 分析「{app_name}」用户评论...")
 
-        analysis = _analyze_app(app_name, trimmed, language)
+        analysis = _analyze_app(app_name, trimmed, language, feedback_source=feedback_source)
         analysis["review_sample"] = {
             "total": len(sampled_reviews),
             "recent": sum(r.get("sample_source") in {"recent", "both"} for r in sampled_reviews),
         }
+        analysis["feedback_source"] = feedback_source
         app_analyses[app_name] = analysis
         review_evidence[app_name] = [r.get("text", "")[:260] for r in sampled_reviews]
 
