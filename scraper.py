@@ -28,10 +28,10 @@ def search_app(query: str, country: str = "cn") -> list[dict]:
 def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 100,
                 language: str = "zh") -> list[dict]:
     """
-    获取用户评论：仅使用 App Store 的近期原始评论。
+    获取用户反馈：优先使用 App Store 的近期原始评论。
 
-    痛点优先级由上层对评论主题的聚类覆盖量决定。搜索摘要不能冒充用户评论，
-    因此 RSS 无数据时返回空，由调用方明确提示而不是混入其他网页内容。
+    RSS 暂时不可用时，补充公开用户讨论，保证分析可继续进行；每条记录都会
+    标注来源，供上层在结论中区分 App Store 评论与公开反馈。
     """
     reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mostrecent", "recent"))
     # 部分应用的「最新」列表会被 Apple RSS 间歇性返回为空；仅在此时改用同一
@@ -40,7 +40,8 @@ def get_reviews(app_name: str, app_id: int, country: str = "cn", count: int = 10
         reviews = _merge_reviews(_get_rss_reviews(app_id, country, count, "mosthelpful", "app_store_fallback"))
     if reviews:
         return reviews[:count]
-    return []
+
+    return _get_tavily_reviews(app_name, count, language)
 
 
 def _to_int(value) -> int:
@@ -115,7 +116,7 @@ def _get_rss_reviews(app_id: int, country: str, count: int, sort_by: str,
 
 
 def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list[dict]:
-    """用 Tavily 搜索真实用户评价，来源包括知乎、贴吧、应用市场等。"""
+    """补充公开用户讨论；不将其标记为 App Store 评论。"""
     try:
         from tavily import TavilyClient
         api_key = os.getenv("TAVILY_API_KEY", "")
@@ -149,7 +150,7 @@ def _get_tavily_reviews(app_name: str, count: int, language: str = "zh") -> list
                                 "vote_sum": 0,
                                 "vote_count": 0,
                                 "updated": "",
-                                "sample_source": "web_search",
+                                "sample_source": "public_feedback",
                             })
             if len(reviews) >= count:
                 break
